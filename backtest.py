@@ -22,10 +22,9 @@ NIFTY_50 = [
 ]
 
 # ==============================================
-# 📈 TECHNICAL ANALYSIS (SIRF EMA CROSSOVER - PATTERN OPTIONAL)
+# 📈 TECHNICAL ANALYSIS (EMA CROSSOVER + PATTERN OPTIONAL)
 # ==============================================
 def analyze_df(df, check_pattern=False):
-    """EMA Crossover check. Pattern optional hai."""
     if len(df) < 50:
         return False, ''
     
@@ -34,35 +33,29 @@ def analyze_df(df, check_pattern=False):
     if df['EMA_200'].isna().all():
         return False, ''
     
-    # Crossover Check (Price crosses ABOVE 200 EMA)
     prev_c = df['Close'].iloc[-2]
     curr_c = df['Close'].iloc[-1]
     prev_e = df['EMA_200'].iloc[-2]
     curr_e = df['EMA_200'].iloc[-1]
     ema_cross = (prev_c < prev_e) and (curr_c > curr_e)
     
-    # Agar pattern check karna hai toh
     if check_pattern and ema_cross:
-        # Only check pattern if crossover happened
         pattern_name = ""
         pattern_detected = False
         
         engulf = ta.cdl_engulfing(df['Open'], df['High'], df['Low'], df['Close'])
         if engulf is not None and not engulf.empty and len(engulf) > 0 and engulf.iloc[-1] > 0:
-            pattern_detected = True
-            pattern_name = "Bullish Engulfing"
+            pattern_detected = True; pattern_name = "Bullish Engulfing"
         
         if not pattern_detected:
             hammer = ta.cdl_hammer(df['Open'], df['High'], df['Low'], df['Close'])
             if hammer is not None and not hammer.empty and len(hammer) > 0 and hammer.iloc[-1] > 0:
-                pattern_detected = True
-                pattern_name = "Hammer"
+                pattern_detected = True; pattern_name = "Hammer"
         
         if not pattern_detected:
             dragon = ta.cdl_dragonfly_doji(df['Open'], df['High'], df['Low'], df['Close'])
             if dragon is not None and not dragon.empty and len(dragon) > 0 and dragon.iloc[-1] > 0:
-                pattern_detected = True
-                pattern_name = "Dragonfly Doji"
+                pattern_detected = True; pattern_name = "Dragonfly Doji"
         
         return ema_cross and pattern_detected, pattern_name
     
@@ -77,13 +70,13 @@ def backtest_stock(ticker, years=2, hold_days=[5, 10, 20]):
     end_date = datetime.now()
     start_date = end_date - timedelta(days=365 * years)
     
-    # Fetch Daily data (for daily signals)
+    # Daily data
     df_daily = yf.download(ticker, start=start_date, end=end_date, interval='1d', progress=False, auto_adjust=True)
     if df_daily.empty or len(df_daily) < 250:
         print(f"  ❌ Insufficient daily data for {ticker}")
         return None
     
-    # Fetch 1H data (for 1H and 4H signals)
+    # 1H data
     try:
         df_1h = yf.download(ticker, period='60d', interval='1h', progress=False, auto_adjust=True)
         if df_1h.empty or len(df_1h) < 100:
@@ -91,20 +84,30 @@ def backtest_stock(ticker, years=2, hold_days=[5, 10, 20]):
     except:
         df_1h = None
     
-    # Resample 1H to 4H
-    if df_1h is not None:
-        df_4h = df_1h.resample('4h').agg({
-            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
-        }).dropna()
-    else:
-        df_4h = None
+    # Resample 1H -> 4H (FIXED: dynamic column handling)
+    df_4h = None
+    if df_1h is not None and not df_1h.empty:
+        try:
+            # Ensure column names are clean
+            df_1h.columns = df_1h.columns.str.strip()
+            # Resample using column indices to avoid KeyError
+            df_4h = df_1h.resample('4h').agg({
+                df_1h.columns[0]: 'first',
+                df_1h.columns[1]: 'max',
+                df_1h.columns[2]: 'min',
+                df_1h.columns[3]: 'last'
+            }).dropna()
+            df_4h.columns = ['Open', 'High', 'Low', 'Close']
+        except Exception as e:
+            print(f"  ⚠️ Could not resample to 4H: {e}")
+            df_4h = None
     
     all_signals = []
     
-    # Check Daily signals
+    # Daily signals
     for i in range(250, len(df_daily) - max(hold_days)):
         slice_df = df_daily.iloc[:i+1].copy()
-        signal, pattern = analyze_df(slice_df, check_pattern=False)  # Only crossover, no pattern
+        signal, pattern = analyze_df(slice_df, check_pattern=False)
         if signal:
             entry_price = df_daily['Close'].iloc[i]
             entry_date = df_daily.index[i]
@@ -125,8 +128,8 @@ def backtest_stock(ticker, years=2, hold_days=[5, 10, 20]):
                     'Win': return_pct > 0
                 })
     
-    # Check 4H signals (if available)
-    if df_4h is not None and len(df_4h) > 100:
+    # 4H signals
+    if df_4h is not None and not df_4h.empty and len(df_4h) > 50:
         for i in range(50, len(df_4h) - max(hold_days)*4):
             slice_df = df_4h.iloc[:i+1].copy()
             signal, pattern = analyze_df(slice_df, check_pattern=False)
@@ -157,7 +160,6 @@ def backtest_stock(ticker, years=2, hold_days=[5, 10, 20]):
     df_res = pd.DataFrame(all_signals)
     print(f"  ✅ Total signals found: {len(all_signals)}")
     
-    # Per holding period summary
     for days in hold_days:
         subset = df_res[df_res['Hold_Days'] == days]
         if len(subset) > 0:
@@ -210,7 +212,6 @@ if __name__ == "__main__":
                 print(f"   Max Return: {max_return:.2f}%")
                 print(f"   Min Return: {min_return:.2f}%")
         
-        # Timeframe-wise breakdown
         print("\n📊 Timeframe-wise breakdown:")
         for tf in final_df['Timeframe'].unique():
             tf_subset = final_df[final_df['Timeframe'] == tf]
