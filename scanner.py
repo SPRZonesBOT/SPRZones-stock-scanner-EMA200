@@ -1,6 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import pandas as ta
+import pandas_ta as ta
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -80,7 +80,7 @@ def analyze_df(df):
     if len(df) < 50:
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': ''}
     
-    # 🔥 FIX: Flatten MultiIndex if present
+    # 🔥 Flatten MultiIndex
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = ['_'.join(col).strip() for col in df.columns.values]
         df.columns = [col.split('_')[0] for col in df.columns]
@@ -123,12 +123,12 @@ def analyze_df(df):
     return {
         'ema': ema_cross,
         'pattern': pattern_detected,
-        'signal': ema_cross and pattern_detected,
+        'signal': ema_cross and pattern_detected,  # Strict Tech
         'pattern_name': pattern_name
     }
 
 # ======================================================
-# 🔍 SCAN SINGLE STOCK (2 FILTERS)
+# 🔍 SCAN SINGLE STOCK (4 QUADRANTS)
 # ======================================================
 def scan_stock(ticker):
     try:
@@ -160,13 +160,21 @@ def scan_stock(ticker):
         if funda is None:
             return None
         
-        # 🔥 🔥 🔥 TWO SIGNALS 🔥 🔥 🔥
-        # 1. Technical Signal (EMA + Pattern, IGNORE FUNDA)
-        any_tech_signal = r1['signal'] or r4['signal'] or rd['signal']
-        tech_signal = any_tech_signal  # Fundamentals ka koi role nahi
+        # 🔥 🔥 🔥 4 QUADRANT LOGIC 🔥 🔥 🔥
+        has_ema = r1['ema'] or r4['ema'] or rd['ema']
+        has_pattern = r1['pattern'] or r4['pattern'] or rd['pattern']
+        funda_ok = funda['score'] >= 3
         
-        # 2. Final Buy (Technical + Fundamentals Strong)
-        final_buy = tech_signal and (funda['score'] >= 3)
+        # Quadrants
+        cat_pattern_funda = has_ema and has_pattern and funda_ok          # 1️⃣ Best: Pattern + Funda
+        cat_pattern_nofunda = has_ema and has_pattern and not funda_ok    # 2️⃣ Tech Strong, Funda Weak
+        cat_nopattern_funda = has_ema and not has_pattern and funda_ok    # 3️⃣ Pure EMA, Funda Strong
+        cat_nopattern_nofunda = has_ema and not has_pattern and not funda_ok # 4️⃣ Pure EMA, No Funda
+        
+        # Total Tech Signal (Strict)
+        tech_strict = has_ema and has_pattern
+        # Total Pure EMA (Loose)
+        tech_loose = has_ema
         
         try:
             name = yf.Ticker(ticker).info.get('longName', ticker)[:25]
@@ -174,89 +182,28 @@ def scan_stock(ticker):
             name = ticker
         
         return {
-            'ticker': ticker,
-            'name': name,
-            'df_1h': df1,
-            'df_4h': df4,
-            'df_d': dfd,
-            'r1': r1,
-            'r4': r4,
-            'rd': rd,
+            'ticker': ticker, 'name': name,
+            'df_1h': df1, 'df_4h': df4, 'df_d': dfd,
+            'r1': r1, 'r4': r4, 'rd': rd,
             'funda': funda,
-            'tech_signal': tech_signal,   # 🟡 New: Without Fundamentals
-            'final_buy': final_buy         # 🔴 Original: With Fundamentals
+            # Raw signals
+            'has_ema': has_ema,
+            'has_pattern': has_pattern,
+            'funda_ok': funda_ok,
+            # 4 Quadrants
+            'cat_pattern_funda': cat_pattern_funda,
+            'cat_pattern_nofunda': cat_pattern_nofunda,
+            'cat_nopattern_funda': cat_nopattern_funda,
+            'cat_nopattern_nofunda': cat_nopattern_nofunda,
+            # Aggregated
+            'tech_strict': tech_strict,
+            'tech_loose': tech_loose,
+            'final_recommendation': '🔥 STRONG BUY' if cat_pattern_funda else 
+                                    ('📈 TECH WATCH' if cat_pattern_nofunda else 
+                                     ('💪 FUNDA WATCH' if cat_nopattern_funda else '⛔ AVOID'))
         }
     except Exception as e:
         return None
-
-# ======================================================
-# 📊 CHART + PDF GENERATOR
-# ======================================================
-def create_stock_charts(result):
-    ticker = result['ticker']; name = result['name']
-    r1, r4, rd = result['r1'], result['r4'], result['rd']
-    df1, df4, dfd = result['df_1h'], result['df_4h'], result['df_d']
-    funda = result['funda']
-    tech_signal = result['tech_signal']
-    final_buy = result['final_buy']
-    
-    df1 = df1.tail(90); df4 = df4.tail(90); dfd = dfd.tail(90)
-    charts = []
-    
-    def plot_tf(df, tf_name, cross_data, pattern_name):
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = ['_'.join(col).strip() for col in df.columns.values]
-            df.columns = [col.split('_')[0] for col in df.columns]
-        
-        df['EMA_200'] = ta.ema(df['Close'], length=200)
-        mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', wick='inherit')
-        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True)
-        ap_ema = mpf.make_addplot(df['EMA_200'], color='orange', width=1.5)
-        
-        # 🔥 Status in title
-        status = "🚀 FINAL BUY" if final_buy else ("📈 TECH ONLY" if tech_signal else "⛔ NO SIGNAL")
-        title = f"{ticker} - {name[:20]} ({tf_name}) | {status}\nPattern: {pattern_name if pattern_name else 'None'}"
-        
-        fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
-                             volume=False, figsize=(10, 6), returnfig=True,
-                             tight_layout=True, title=title)
-        ax = axes[0]
-        if pattern_name and cross_data.get('signal', False):
-            last_x = len(df) - 1
-            last_high = df['High'].iloc[-1]
-            ax.annotate(f'🚀 {pattern_name}', xy=(last_x, last_high),
-                        xytext=(last_x - 15, last_high * 1.02),
-                        arrowprops=dict(arrowstyle='->', color='yellow', lw=1.5),
-                        color='yellow', fontsize=10, weight='bold',
-                        bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
-        if cross_data.get('signal', False):
-            ax.axvline(x=len(df) - 1, color='cyan', linestyle='--', alpha=0.6, linewidth=2, label='Crossover')
-            ax.legend()
-        return fig
-    
-    fig1 = plot_tf(df1, '1 Hour', r1, r1.get('pattern_name', ''))
-    fig2 = plot_tf(df4, '4 Hour', r4, r4.get('pattern_name', ''))
-    fig3 = plot_tf(dfd, 'Daily', rd, rd.get('pattern_name', ''))
-    
-    # 📋 Info Text with Both Signals
-    info_text = f"""
-    📊 {ticker} - {name}
-    ========================================
-    📈 TECHNICAL SIGNAL: {'✅ YES' if tech_signal else '❌ NO'}
-    💰 FINAL BUY (Funda+Tech): {'✅ YES' if final_buy else '❌ NO'}
-    ----------------------------------------
-    📊 Fundamental Score: {funda['score']}/5
-    PE: {funda['pe']:.2f} | ROE: {funda['roe']*100:.2f}%
-    Debt/Equity: {funda['debt']:.2f} | Margin: {funda['margin']*100:.2f}%
-    Revenue Growth: {funda['growth']*100:.2f}%
-    ----------------------------------------
-    🔍 Timeframe Breakdown:
-    1H:  {'✅' if r1['signal'] else '❌'} ({r1['pattern_name'] or 'None'})
-    4H:  {'✅' if r4['signal'] else '❌'} ({r4['pattern_name'] or 'None'})
-    Daily: {'✅' if rd['signal'] else '❌'} ({rd['pattern_name'] or 'None'})
-    """
-    return [fig1, fig2, fig3, info_text]
 
 # ======================================================
 # 📧 EMAIL SENDER
@@ -288,7 +235,71 @@ def send_email_with_pdf(pdf_path, subject, body):
         return False
 
 # ======================================================
-# 🚀 MAIN FUNCTION
+# 📊 CHART + PDF GENERATOR
+# ======================================================
+def create_stock_charts(result):
+    ticker = result['ticker']; name = result['name']
+    r1, r4, rd = result['r1'], result['r4'], result['rd']
+    df1, df4, dfd = result['df_1h'], result['df_4h'], result['df_d']
+    funda = result['funda']
+    rec = result['final_recommendation']
+    
+    df1 = df1.tail(90); df4 = df4.tail(90); dfd = dfd.tail(90)
+    charts = []
+    
+    def plot_tf(df, tf_name, cross_data, pattern_name):
+        if df.empty: return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = ['_'.join(col).strip() for col in df.columns.values]
+            df.columns = [col.split('_')[0] for col in df.columns]
+        
+        df['EMA_200'] = ta.ema(df['Close'], length=200)
+        mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', wick='inherit')
+        s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True)
+        ap_ema = mpf.make_addplot(df['EMA_200'], color='orange', width=1.5)
+        
+        title = f"{ticker} - {name[:20]} ({tf_name}) | {rec}\nPattern: {pattern_name if pattern_name else 'None'}"
+        
+        fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
+                             volume=False, figsize=(10, 6), returnfig=True,
+                             tight_layout=True, title=title)
+        ax = axes[0]
+        if pattern_name and cross_data.get('signal', False):
+            last_x = len(df) - 1
+            last_high = df['High'].iloc[-1]
+            ax.annotate(f'🚀 {pattern_name}', xy=(last_x, last_high),
+                        xytext=(last_x - 15, last_high * 1.02),
+                        arrowprops=dict(arrowstyle='->', color='yellow', lw=1.5),
+                        color='yellow', fontsize=10, weight='bold',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
+        if cross_data.get('signal', False):
+            ax.axvline(x=len(df) - 1, color='cyan', linestyle='--', alpha=0.6, linewidth=2, label='Crossover')
+            ax.legend()
+        return fig
+    
+    fig1 = plot_tf(df1, '1 Hour', r1, r1.get('pattern_name', ''))
+    fig2 = plot_tf(df4, '4 Hour', r4, r4.get('pattern_name', ''))
+    fig3 = plot_tf(dfd, 'Daily', rd, rd.get('pattern_name', ''))
+    
+    info_text = f"""
+    📊 {ticker} - {name}
+    ========================================
+    🏷️ Recommendation: {rec}
+    ----------------------------------------
+    📈 Fundamentals Score: {funda['score']}/5
+    PE: {funda['pe']:.2f} | ROE: {funda['roe']*100:.2f}%
+    Debt/Equity: {funda['debt']:.2f} | Margin: {funda['margin']*100:.2f}%
+    Revenue Growth: {funda['growth']*100:.2f}%
+    ----------------------------------------
+    🔍 Timeframe Breakdown:
+    1H:  ✅ EMA: {r1['ema']} | Pattern: {r1['pattern']} ({r1['pattern_name'] or 'None'})
+    4H:  ✅ EMA: {r4['ema']} | Pattern: {r4['pattern']} ({r4['pattern_name'] or 'None'})
+    Daily: ✅ EMA: {rd['ema']} | Pattern: {rd['pattern']} ({rd['pattern_name'] or 'None'})
+    """
+    return [fig1, fig2, fig3, info_text]
+
+# ======================================================
+# 🚀 MAIN
 # ======================================================
 def main():
     print(f"🔄 Scanning {len(STOCKS)} stocks...")
@@ -305,59 +316,69 @@ def main():
             all_results.append(res)
         time.sleep(0.5)
     
-    print(f"✅ Scan complete! Total stocks processed: {len(all_results)}")
+    print(f"✅ Scan complete! Total processed: {len(all_results)}")
     
-    # 🔥 FILTER RESULTS
-    tech_stocks = [r for r in all_results if r['tech_signal']]
-    buy_stocks = [r for r in all_results if r['final_buy']]
+    # 🔥 FILTER 4 QUADRANTS
+    cat1 = [r for r in all_results if r['cat_pattern_funda']]       # With Pattern, With Funda
+    cat2 = [r for r in all_results if r['cat_pattern_nofunda']]     # With Pattern, No Funda
+    cat3 = [r for r in all_results if r['cat_nopattern_funda']]     # No Pattern, With Funda
+    cat4 = [r for r in all_results if r['cat_nopattern_nofunda']]   # No Pattern, No Funda
     
-    print(f"📈 Technical Signals (Funda ignored): {len(tech_stocks)}")
-    print(f"🚀 Final Buy (Funda + Tech): {len(buy_stocks)}")
+    print("\n" + "="*60)
+    print("📊 QUADRANT ANALYSIS RESULTS")
+    print("="*60)
+    print(f"🔥 1. With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks")
+    print(f"📈 2. With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks")
+    print(f"💪 3. No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks")
+    print(f"⛔ 4. No Pattern + No Funda (AVOID): {len(cat4)} stocks")
     
-    if not tech_stocks:
+    # If no stocks in Cat1, send simpler email
+    if not cat1 and not cat2 and not cat3:
         send_email_with_pdf(
             pdf_path=None,
             subject=f"📊 SPRZ Scan - {datetime.now().strftime('%d-%b-%Y')}",
-            body=f"No technical signals found today.\nScanned {len(STOCKS)} stocks."
+            body=f"No significant signals found today.\nScanned {len(STOCKS)} stocks.\n\nDetailed counts:\nCat1 (Strong Buy): 0\nCat2 (Tech Watch): {len(cat2)}\nCat3 (Funda Watch): {len(cat3)}\nCat4 (Avoid): {len(cat4)}"
         )
-        print("No tech signals found. Email sent without PDF.")
+        print("No significant signals. Email sent without PDF.")
         return
     
-    # 📄 PDF Generate - Include ALL Tech Stocks
+    # 📄 PDF Generate - Include Cat1, Cat2, Cat3 (Cat4 avoid karo)
+    stocks_to_show = cat1 + cat2 + cat3
     pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
     
     with PdfPages(pdf_path) as pdf:
-        # 📋 Summary Page (New)
-        fig_summary, ax_summary = plt.subplots(figsize=(12, 8))
+        # 📋 Summary Page
+        fig_summary, ax_summary = plt.subplots(figsize=(14, 10))
         ax_summary.axis('off')
         summary_text = f"""
         📊 SPRZ SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}
-        ========================================
-        📈 Total Technical Signals (Funda Ignored): {len(tech_stocks)}
-        🚀 Final Buy Signals (Funda + Tech): {len(buy_stocks)}
+        ============================================================
+        🔥 CAT 1: With Pattern + With Funda (STRONG BUY) → {len(cat1)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat1]) if cat1 else "     (None)"}
         
-        💡 Difference: {len(tech_stocks) - len(buy_stocks)} stocks filtered out by Fundamentals.
+        📈 CAT 2: With Pattern + No Funda (TECH WATCH) → {len(cat2)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat2]) if cat2 else "     (None)"}
         
-        ✅ Technical Breakouts (All):
-        {chr(10).join([f"  - {s['ticker']} ({s['name']})" for s in tech_stocks])}
+        💪 CAT 3: No Pattern + With Funda (FUNDA WATCH) → {len(cat3)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat3]) if cat3 else "     (None)"}
         
-        🚀 Final Buy (Strong Fundamentals):
-        {chr(10).join([f"  - {s['ticker']} ({s['name']})" for s in buy_stocks]) if buy_stocks else "  (None)"}
+        ⛔ CAT 4: No Pattern + No Funda (AVOID) → {len(cat4)} stocks (Not shown)
+        ============================================================
+        📈 Total EMA Crossovers: {len([r for r in all_results if r['has_ema']])}
+        🕯️ Total Patterns Detected: {len([r for r in all_results if r['has_pattern']])}
         """
-        ax_summary.text(0.1, 0.9, summary_text, fontsize=12, family='monospace', verticalalignment='top')
+        ax_summary.text(0.05, 0.95, summary_text, fontsize=12, family='monospace', verticalalignment='top')
         pdf.savefig(fig_summary)
         plt.close(fig_summary)
         
-        # Charts for ALL Tech Stocks
-        for stock in tech_stocks:
+        # Charts for Cat1, Cat2, Cat3
+        for stock in stocks_to_show:
             print(f"  Generating charts for {stock['ticker']}...")
             chart_data = create_stock_charts(stock)
-            
             for i in range(3):
                 if chart_data[i]:
                     pdf.savefig(chart_data[i])
                     plt.close(chart_data[i])
-            
             fig_info, ax_info = plt.subplots(figsize=(12, 8))
             ax_info.axis('off')
             ax_info.text(0.05, 0.95, chart_data[3], fontsize=11, family='monospace', verticalalignment='top')
@@ -367,19 +388,22 @@ def main():
     print(f"✅ PDF generated: {pdf_path}")
     
     # 📧 Email
-    subject = f"🚀 SPRZ Scan - {len(tech_stocks)} Tech Signals, {len(buy_stocks)} Final Buys ({datetime.now().strftime('%d-%b-%Y')})"
+    subject = f"🚀 SPRZ Scan - Cat1:{len(cat1)} | Cat2:{len(cat2)} | Cat3:{len(cat3)} ({datetime.now().strftime('%d-%b-%Y')})"
     body = f"""
     Hi,
     
     ✅ Scan complete!
     
-    📈 Technical Signals (EMA + Pattern, No Funda): {len(tech_stocks)}
-    🚀 Final Buy (Tech + Fundamentals >= 3): {len(buy_stocks)}
+    🔥 1. With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat1]) if cat1 else "    (None)"}
     
-    🔥 Final Buy Stocks:
-    {chr(10).join([f"- {s['ticker']} ({s['name']})" for s in buy_stocks]) if buy_stocks else "  (None)"}
+    📈 2. With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat2]) if cat2 else "    (None)"}
     
-    📊 Full PDF report attached with detailed charts.
+    💪 3. No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat3]) if cat3 else "    (None)"}
+    
+    📊 Full PDF report attached.
     
     Regards,
     SPRZ Scanner Bot
