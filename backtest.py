@@ -8,13 +8,15 @@ from datetime import datetime, timedelta
 # ==============================================
 # 📈 TECHNICAL ANALYSIS (Same as scanner)
 # ==============================================
-def analyze_df(df):
+def analyze_df(df, debug=False):
     if len(df) < 50:
+        if debug: print("  ⚠️ DataFrame too short")
         return False, ''
     
     df = df.copy()
     df['EMA_200'] = ta.ema(df['Close'], length=200)
     if df['EMA_200'].isna().all():
+        if debug: print("  ⚠️ EMA calculation failed")
         return False, ''
     
     # Crossover
@@ -24,6 +26,9 @@ def analyze_df(df):
     curr_e = df['EMA_200'].iloc[-1]
     ema_cross = (prev_c < prev_e) and (curr_c > curr_e)
     
+    if debug:
+        print(f"  📊 Crossover: prev_c={prev_c:.2f}, prev_e={prev_e:.2f}, curr_c={curr_c:.2f}, curr_e={curr_e:.2f} => {ema_cross}")
+    
     # 🕯️ Bullish Patterns
     pattern_name = ""
     pattern_detected = False
@@ -32,31 +37,38 @@ def analyze_df(df):
     if engulf is not None and not engulf.empty and len(engulf) > 0 and engulf.iloc[-1] > 0:
         pattern_detected = True
         pattern_name = "Bullish Engulfing"
+        if debug: print("  🕯️ Pattern Detected: Bullish Engulfing")
     
     if not pattern_detected:
         hammer = ta.cdl_hammer(df['Open'], df['High'], df['Low'], df['Close'])
         if hammer is not None and not hammer.empty and len(hammer) > 0 and hammer.iloc[-1] > 0:
             pattern_detected = True
             pattern_name = "Hammer"
+            if debug: print("  🕯️ Pattern Detected: Hammer")
     
     if not pattern_detected:
         dragon = ta.cdl_dragonfly_doji(df['Open'], df['High'], df['Low'], df['Close'])
         if dragon is not None and not dragon.empty and len(dragon) > 0 and dragon.iloc[-1] > 0:
             pattern_detected = True
             pattern_name = "Dragonfly Doji"
+            if debug: print("  🕯️ Pattern Detected: Dragonfly Doji")
     
     if not pattern_detected:
         ms = ta.cdl_morning_star(df['Open'], df['High'], df['Low'], df['Close'])
         if ms is not None and not ms.empty and len(ms) > 0 and ms.iloc[-1] > 0:
             pattern_detected = True
             pattern_name = "Morning Star"
+            if debug: print("  🕯️ Pattern Detected: Morning Star")
     
-    return (ema_cross and pattern_detected), pattern_name
+    signal = ema_cross and pattern_detected
+    if debug:
+        print(f"  📈 Final Signal: {signal} (Cross={ema_cross}, Pattern={pattern_detected}, PatternName={pattern_name})")
+    return signal, pattern_name
 
 # ==============================================
 # 📊 BACKTEST ENGINE
 # ==============================================
-def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
+def backtest_stock(ticker, years=3, hold_days=[5, 10, 20], debug=False):
     print(f"\n📊 Backtesting {ticker} for {years} years...")
     
     end_date = datetime.now()
@@ -69,15 +81,18 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
     
     results = []
     total_signals = 0
+    last_signal_date = None
     
     for i in range(250, len(df) - max(hold_days)):
         slice_df = df.iloc[:i+1].copy()
-        signal, pattern = analyze_df(slice_df)
+        signal, pattern = analyze_df(slice_df, debug=(debug and i % 100 == 0))
         
         if signal:
             total_signals += 1
             entry_price = df['Close'].iloc[i]
             entry_date = df.index[i]
+            last_signal_date = entry_date.strftime('%Y-%m-%d')
+            print(f"  🚀 Signal found on {entry_date.strftime('%Y-%m-%d')}: {pattern}")
             
             for days in hold_days:
                 exit_idx = min(i + days, len(df) - 1)
@@ -116,6 +131,23 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
     return df_res
 
 # ==============================================
+# 🚀 NIFTY 50 STOCKS LIST
+# ==============================================
+def get_nifty50():
+    return [
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "HINDUNILVR.NS",
+        "ICICIBANK.NS", "HDFC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+        "BAJFINANCE.NS", "WIPRO.NS", "HCLTECH.NS", "ASIANPAINT.NS", "AXISBANK.NS",
+        "LT.NS", "MARUTI.NS", "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS",
+        "ADANIPORTS.NS", "NTPC.NS", "POWERGRID.NS", "M&M.NS", "TATASTEEL.NS",
+        "JSWSTEEL.NS", "TECHM.NS", "INDUSINDBK.NS", "BAJAJFINSV.NS", "HDFCLIFE.NS",
+        "SBILIFE.NS", "DRREDDY.NS", "HINDALCO.NS", "EICHERMOT.NS", "COALINDIA.NS",
+        "ONGC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TATACONSUM.NS", "DIVISLAB.NS",
+        "UPL.NS", "SHREECEM.NS", "GRASIM.NS", "APOLLOHOSP.NS", "HEROMOTOCO.NS",
+        "BAJAJ-AUTO.NS", "ADANIENT.NS", "TATAMOTORS.NS", "VEDL.NS"
+    ]
+
+# ==============================================
 # 🚀 MAIN
 # ==============================================
 if __name__ == "__main__":
@@ -123,11 +155,13 @@ if __name__ == "__main__":
     print("🔥 SPRZ Backtest Engine (Technical Strategy Only)")
     print("="*60)
     
-    test_stocks = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "HINDUNILVR.NS"]
+    test_stocks = get_nifty50()  # Nifty 50
+    print(f"📊 Testing {len(test_stocks)} stocks...")
+    
     all_results = []
     
     for stock in test_stocks:
-        res = backtest_stock(stock, years=3, hold_days=[5, 10, 20])
+        res = backtest_stock(stock, years=2, hold_days=[5, 10, 20], debug=False)
         if res is not None and not res.empty:
             all_results.append(res)
     
@@ -135,7 +169,7 @@ if __name__ == "__main__":
         final_df = pd.concat(all_results, ignore_index=True)
         
         print("\n" + "="*60)
-        print("📈 OVERALL BACKTEST SUMMARY (3 Years)")
+        print("📈 OVERALL BACKTEST SUMMARY (2 Years)")
         print("="*60)
         
         for days in [5, 10, 20]:
@@ -159,3 +193,4 @@ if __name__ == "__main__":
         print("\n✅ Full results saved to 'backtest_results.csv'")
     else:
         print("❌ No backtest results generated.")
+        print("\n💡 Tip: Try increasing years or using different stocks.")
