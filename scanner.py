@@ -1,6 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
+import pandas as ta
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
