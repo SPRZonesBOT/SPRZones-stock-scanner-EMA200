@@ -19,7 +19,7 @@ def analyze_df(df):
         df['EMA_200'] = ta.ema(df['Close'], length=200)
     except AttributeError:
         # Fallback: agar ta.ema kaam nahi kare toh pandas_ta ka function direct use karo
-        import pandas_ta as pta
+        import pandas as pta
         df['EMA_200'] = pta.ema(df['Close'], length=200)
     
     if df['EMA_200'].isna().all():
