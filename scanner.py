@@ -1,6 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import pandas as ta
+import pandas_ta as ta
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
@@ -12,9 +12,11 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
+import warnings
+warnings.filterwarnings('ignore')
 
 # ======================================================
-# 🔥 CONFIG - Ye values GitHub Secrets se aayengi
+# 🔥 CONFIG - GitHub Secrets se aayengi
 # ======================================================
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -26,33 +28,24 @@ EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT")
 # 📥 NIFTY 500 STOCKS (Auto-Fetch from NSE)
 # ======================================================
 def get_nifty500_tickers():
-    """
-    NSE ki official website se Nifty 500 stocks ki list fetch karega.
-    Agar fail ho toh fallback list (Top 20) use karega.
-    """
     fallback_list = [
         "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
         "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
         "BAJFINANCE.NS", "WIPRO.NS", "HCLTECH.NS", "ASIANPAINT.NS", "AXISBANK.NS",
         "LT.NS", "MARUTI.NS", "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS"
     ]
-    
     try:
-        print("📥 Fetching latest Nifty 500 list from NSE...")
-        # NSE ka official CSV (rozana update hota hai)
+        print("📥 Fetching Nifty 500 list from NSE...")
         url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
         df = pd.read_csv(url)
         symbols = df['Symbol'].tolist()
-        # yfinance ke liye .NS lagana zaroori hai
-        nifty500 = [symbol + ".NS" for symbol in symbols]
-        print(f"✅ Successfully fetched {len(nifty500)} stocks from NSE.")
+        nifty500 = [s + ".NS" for s in symbols]
+        print(f"✅ Fetched {len(nifty500)} stocks.")
         return nifty500
     except Exception as e:
-        print(f"⚠️ Could not fetch Nifty 500 list: {e}")
-        print("🔄 Using fallback list of 20 stocks.")
+        print(f"⚠️ Fetch failed: {e}. Using fallback.")
         return fallback_list
 
-# 🔥 Ye hai final stock list jo scan hogi
 STOCKS = get_nifty500_tickers()
 print(f"📊 Total stocks to scan: {len(STOCKS)}")
 
@@ -68,35 +61,26 @@ def get_fundamentals(ticker):
         debt = info.get('debtToEquity', 999)
         margin = info.get('profitMargins', 0)
         growth = info.get('revenueGrowth', 0)
-        
         if pe is None or roe is None or pe <= 0:
             return None
-        
         score = 0
         if pe < 30: score += 1
         if roe > 0.15: score += 1
         if debt < 1.5: score += 1
         if margin > 0.10: score += 1
         if growth > 0.10: score += 1
-        
-        return {
-            'score': score,
-            'pe': pe,
-            'roe': roe,
-            'debt': debt,
-            'margin': margin,
-            'growth': growth
-        }
+        return {'score': score, 'pe': pe, 'roe': roe, 'debt': debt, 'margin': margin, 'growth': growth}
     except:
         return None
 
 # ======================================================
 # 📈 TECHNICAL ANALYSIS (EMA Cross + Patterns)
 # ======================================================
-def analyze_df(df):
+def analyze_df(df, tf_name):
     if len(df) < 50:
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': ''}
     
+    df = df.copy()
     df['EMA_200'] = ta.ema(df['Close'], length=200)
     if df['EMA_200'].isna().all():
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': ''}
@@ -132,7 +116,7 @@ def analyze_df(df):
             pattern_detected = True
             pattern_name = "Dragonfly Doji"
     
-    # 4. Morning Star (Extra)
+    # 4. Morning Star
     if not pattern_detected:
         ms = ta.cdl_morning_star(df['Open'], df['High'], df['Low'], df['Close'])
         if ms is not None and not ms.empty and len(ms) > 0 and ms.iloc[-1] > 0:
@@ -147,41 +131,64 @@ def analyze_df(df):
     }
 
 # ======================================================
-# 🔍 SCAN SINGLE STOCK
+# 🔍 SCAN SINGLE STOCK (OPTIMIZED - 2 API calls)
 # ======================================================
 def scan_stock(ticker):
     try:
-        # 1H Data
-        df1 = yf.download(ticker, period='60d', interval='1h', progress=False, auto_adjust=True)
-        if df1.empty or len(df1) < 200:
+        # 🔥 OPTIMIZATION 1: Fetch 15min data (period='30d' enough for EMA200)
+        df_15m = yf.download(ticker, period='30d', interval='15m', progress=False, auto_adjust=True)
+        if df_15m.empty or len(df_15m) < 100:
             return None
-        r1 = analyze_df(df1)
         
-        # 4H Data (Resample 1H -> 4H)
-        df4 = df1.resample('4h').agg({
+        # Resample 15min -> 30min
+        df_30m = df_15m.resample('30min').agg({
             'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
         }).dropna()
-        r4 = analyze_df(df4)
         
-        # Daily Data
-        dfd = yf.download(ticker, period='60d', interval='1d', progress=False, auto_adjust=True)
-        if dfd.empty or len(dfd) < 200:
-            # Agar daily data nahi mila toh resample karo
-            dfd = df1.resample('1d').agg({
-                'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
-            }).dropna()
-        rd = analyze_df(dfd)
+        # Resample 15min -> 1H
+        df_1h = df_15m.resample('1h').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
+        }).dropna()
+        
+        # Resample 1H -> 4H
+        df_4h = df_1h.resample('4h').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
+        }).dropna()
+        
+        # 🔥 OPTIMIZATION 2: Fetch Daily data (for Daily, Weekly, Monthly)
+        df_d = yf.download(ticker, period='60d', interval='1d', progress=False, auto_adjust=True)
+        if df_d.empty or len(df_d) < 50:
+            return None
+        
+        # Resample Daily -> Weekly
+        df_w = df_d.resample('W').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
+        }).dropna()
+        
+        # Resample Daily -> Monthly
+        df_m = df_d.resample('ME').agg({
+            'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'
+        }).dropna()
+        
+        # Analyze all timeframes
+        r_15m = analyze_df(df_15m, '15min')
+        r_30m = analyze_df(df_30m, '30min')
+        r_1h = analyze_df(df_1h, '1H')
+        r_4h = analyze_df(df_4h, '4H')
+        r_d = analyze_df(df_d, 'Daily')
+        r_w = analyze_df(df_w, 'Weekly')
+        r_m = analyze_df(df_m, 'Monthly')
         
         # Fundamentals
         funda = get_fundamentals(ticker)
         if funda is None:
             return None
         
-        # Final Decision
-        any_signal = r1['signal'] or r4['signal'] or rd['signal']
-        buy_decision = any_signal and (funda['score'] >= 3)  # 3/5 fundamentals strong
+        # Final Decision - any timeframe signal
+        any_signal = (r_15m['signal'] or r_30m['signal'] or r_1h['signal'] or 
+                     r_4h['signal'] or r_d['signal'] or r_w['signal'] or r_m['signal'])
+        buy_decision = any_signal and (funda['score'] >= 3)
         
-        # Company Name
         try:
             name = yf.Ticker(ticker).info.get('longName', ticker)[:25]
         except:
@@ -190,12 +197,20 @@ def scan_stock(ticker):
         return {
             'ticker': ticker,
             'name': name,
-            'df_1h': df1,
-            'df_4h': df4,
-            'df_d': dfd,
-            'r1': r1,
-            'r4': r4,
-            'rd': rd,
+            'df_15m': df_15m,
+            'df_30m': df_30m,
+            'df_1h': df_1h,
+            'df_4h': df_4h,
+            'df_d': df_d,
+            'df_w': df_w,
+            'df_m': df_m,
+            'r_15m': r_15m,
+            'r_30m': r_30m,
+            'r_1h': r_1h,
+            'r_4h': r_4h,
+            'r_d': r_d,
+            'r_w': r_w,
+            'r_m': r_m,
             'funda': funda,
             'buy': buy_decision
         }
@@ -203,29 +218,33 @@ def scan_stock(ticker):
         return None
 
 # ======================================================
-# 📊 CHART + PDF GENERATOR
+# 📊 CHART + PDF GENERATOR (7 TIMEFRAMES)
 # ======================================================
 def create_stock_charts(result):
     ticker = result['ticker']
     name = result['name']
-    r1, r4, rd = result['r1'], result['r4'], result['rd']
-    df1, df4, dfd = result['df_1h'], result['df_4h'], result['df_d']
     funda = result['funda']
     
-    # Last 90 candles for better visibility
-    df1 = df1.tail(90)
-    df4 = df4.tail(90)
-    dfd = dfd.tail(90)
+    # All timeframes data and results
+    timeframes = [
+        ('15min', result['df_15m'], result['r_15m']),
+        ('30min', result['df_30m'], result['r_30m']),
+        ('1H', result['df_1h'], result['r_1h']),
+        ('4H', result['df_4h'], result['r_4h']),
+        ('Daily', result['df_d'], result['r_d']),
+        ('Weekly', result['df_w'], result['r_w']),
+        ('Monthly', result['df_m'], result['r_m']),
+    ]
     
     charts = []
     
     def plot_tf(df, tf_name, cross_data, pattern_name):
-        if df.empty:
+        if df is None or df.empty or len(df) < 10:
             return None
         
+        df = df.tail(90).copy()
         df['EMA_200'] = ta.ema(df['Close'], length=200)
         
-        # Style
         mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', wick='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True)
         ap_ema = mpf.make_addplot(df['EMA_200'], color='orange', width=1.5)
@@ -236,9 +255,7 @@ def create_stock_charts(result):
                              title=f"{ticker} - {name[:20]} ({tf_name})\nPattern: {pattern_name if pattern_name else 'None'}")
         
         ax = axes[0]
-        
-        # 🚀 Pattern Label
-        if pattern_name and cross_data['signal']:
+        if pattern_name and cross_data.get('signal', False):
             last_x = len(df) - 1
             last_high = df['High'].iloc[-1]
             ax.annotate(f'🚀 {pattern_name}', xy=(last_x, last_high),
@@ -246,37 +263,39 @@ def create_stock_charts(result):
                         arrowprops=dict(arrowstyle='->', color='yellow', lw=1.5),
                         color='yellow', fontsize=10, weight='bold',
                         bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
-        
-        # ⚡ Crossover Point
-        if cross_data['signal']:
-            ax.axvline(x=len(df) - 1, color='cyan', linestyle='--', alpha=0.6, linewidth=2, label='Crossover Point')
+        if cross_data.get('signal', False):
+            ax.axvline(x=len(df) - 1, color='cyan', linestyle='--', alpha=0.6, linewidth=2, label='Crossover')
             ax.legend()
-        
         return fig
     
-    # Generate 3 charts
-    fig1 = plot_tf(df1, '1 Hour', r1, r1['pattern_name'])
-    fig2 = plot_tf(df4, '4 Hour', r4, r4['pattern_name'])
-    fig3 = plot_tf(dfd, 'Daily', rd, rd['pattern_name'])
+    # Generate charts for all timeframes
+    for tf_name, df, r in timeframes:
+        fig = plot_tf(df, tf_name, r, r.get('pattern_name', ''))
+        if fig:
+            charts.append(fig)
     
     # 📋 Fundamental Info Text
     info_text = f"""
     📊 {ticker} - {name}
-    ----------------------------------------
-    Fundamental Score: {funda['score']}/5
+    ========================================
+    📈 Fundamental Score: {funda['score']}/5
     PE: {funda['pe']:.2f}
     ROE: {funda['roe']*100:.2f}%
     Debt/Equity: {funda['debt']:.2f}
     Profit Margin: {funda['margin']*100:.2f}%
     Revenue Growth: {funda['growth']*100:.2f}%
     
-    📈 Signals:
-    1H: {'✅' if r1['signal'] else '❌'} ({r1['pattern_name'] if r1['pattern_name'] else 'No Pattern'})
-    4H: {'✅' if r4['signal'] else '❌'} ({r4['pattern_name'] if r4['pattern_name'] else 'No Pattern'})
-    Daily: {'✅' if rd['signal'] else '❌'} ({rd['pattern_name'] if rd['pattern_name'] else 'No Pattern'})
+    📊 Signal Summary:
+    15min:  {'✅' if result['r_15m']['signal'] else '❌'} ({result['r_15m']['pattern_name'] or 'No Pattern'})
+    30min:  {'✅' if result['r_30m']['signal'] else '❌'} ({result['r_30m']['pattern_name'] or 'No Pattern'})
+    1H:     {'✅' if result['r_1h']['signal'] else '❌'} ({result['r_1h']['pattern_name'] or 'No Pattern'})
+    4H:     {'✅' if result['r_4h']['signal'] else '❌'} ({result['r_4h']['pattern_name'] or 'No Pattern'})
+    Daily:  {'✅' if result['r_d']['signal'] else '❌'} ({result['r_d']['pattern_name'] or 'No Pattern'})
+    Weekly: {'✅' if result['r_w']['signal'] else '❌'} ({result['r_w']['pattern_name'] or 'No Pattern'})
+    Monthly: {'✅' if result['r_m']['signal'] else '❌'} ({result['r_m']['pattern_name'] or 'No Pattern'})
     """
     
-    return [fig1, fig2, fig3, info_text]
+    return charts + [info_text]
 
 # ======================================================
 # 📧 EMAIL SENDER
@@ -307,7 +326,7 @@ def send_email_with_pdf(pdf_path, subject, body):
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
         server.quit()
-        print("✅ Email sent successfully!")
+        print("✅ Email sent!")
         return True
     except Exception as e:
         print(f"❌ Email error: {e}")
@@ -317,64 +336,69 @@ def send_email_with_pdf(pdf_path, subject, body):
 # 🚀 MAIN FUNCTION
 # ======================================================
 def main():
-    print(f"🔄 Starting scan of {len(STOCKS)} stocks... (This may take 30-40 minutes)")
+    print(f"🔄 Scanning {len(STOCKS)} stocks (7 timeframes: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly)...")
+    print("⏱️ Estimated time: 30-45 minutes")
     
     buy_stocks = []
     total = len(STOCKS)
+    failed = 0
     
     for i, t in enumerate(STOCKS):
-        if i % 50 == 0:
-            print(f"  Progress: {i}/{total}")
+        if i % 20 == 0:
+            print(f"  Progress: {i}/{total} ({i/total*100:.1f}%) - Found {len(buy_stocks)} signals so far")
         
-        res = scan_stock(t)
-        if res and res['buy']:
-            buy_stocks.append(res)
-        
-        time.sleep(0.8)  # Yahoo Finance rate limiting
+        try:
+            res = scan_stock(t)
+            if res and res['buy']:
+                buy_stocks.append(res)
+                print(f"  🚀 BUY: {t}")
+            time.sleep(0.5)
+        except Exception as e:
+            failed += 1
+            if failed % 10 == 0:
+                print(f"  ⚠️ {failed} stocks failed so far")
+            time.sleep(1)
     
     print(f"✅ Scan complete! Found {len(buy_stocks)} buy signals.")
+    print(f"⚠️ {failed} stocks failed to scan.")
     
-    # 📧 Agar koi signal nahi mila toh sirf text email bhejo
     if not buy_stocks:
         send_email_with_pdf(
             pdf_path=None,
             subject=f"📊 SPRZ Scan - {datetime.now().strftime('%d-%b-%Y')}",
-            body=f"No buy signals found today.\nScanned {len(STOCKS)} stocks."
+            body=f"No buy signals found today.\nScanned {len(STOCKS)} stocks.\nFailed: {failed}"
         )
         print("No signals found. Email sent without PDF.")
         return
     
-    # 📄 PDF Generate karo
+    # 📄 PDF Generate
     pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
     
     with PdfPages(pdf_path) as pdf:
         for stock in buy_stocks:
             print(f"  Generating charts for {stock['ticker']}...")
-            charts = create_stock_charts(stock)
+            chart_data = create_stock_charts(stock)
             
-            # 3 charts add karo
-            for i in range(3):
-                if charts[i]:
-                    pdf.savefig(charts[i])
-                    plt.close(charts[i])
+            # Charts (first 7 elements are figures)
+            for i in range(len(chart_data) - 1):
+                if chart_data[i]:
+                    pdf.savefig(chart_data[i])
+                    plt.close(chart_data[i])
             
-            # Info page add karo
-            fig_info, ax_info = plt.subplots(figsize=(10, 6))
+            # Info page (last element)
+            fig_info, ax_info = plt.subplots(figsize=(12, 8))
             ax_info.axis('off')
-            ax_info.text(0.1, 0.9, charts[3], fontsize=12, family='monospace', verticalalignment='top')
+            ax_info.text(0.05, 0.95, chart_data[-1], fontsize=11, family='monospace', verticalalignment='top')
             pdf.savefig(fig_info)
             plt.close(fig_info)
     
     print(f"✅ PDF generated: {pdf_path}")
     
-    # 📧 Email bhejo with PDF attachment
-    subject = f"🚀 SPRZ Scanner - {len(buy_stocks)} Buy Signals! {datetime.now().strftime('%d-%b-%Y')}"
-    body = f"Hi,\n\n✅ {len(buy_stocks)} stocks matched all criteria.\n\nSignals found in:\n" + "\n".join([f"- {s['ticker']} ({s['name']})" for s in buy_stocks])
+    # 📧 Email
+    subject = f"🚀 SPRZ Scan - {len(buy_stocks)} Buy Signals! {datetime.now().strftime('%d-%b-%Y')}"
+    body = f"Hi,\n\n✅ {len(buy_stocks)} stocks matched all criteria across 7 timeframes.\n\nSignals:\n" + "\n".join([f"- {s['ticker']} ({s['name']})" for s in buy_stocks])
     
     send_email_with_pdf(pdf_path, subject, body)
-    
-    # Cleanup (optional)
-    # os.remove(pdf_path)
 
 if __name__ == "__main__":
     main()
