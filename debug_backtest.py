@@ -17,9 +17,14 @@ ticker = "RELIANCE.NS"
 df = yf.download(ticker, start=start_date, end=end_date, interval='1d', progress=False)
 
 print(f"\n📊 Data shape: {df.shape}")
-print(f"📊 Columns: {df.columns.tolist()}")
-print(f"📊 First 2 rows:\n{df.head(2)}")
-print(f"📊 Last 2 rows:\n{df.tail(2)}")
+print(f"📊 Columns (raw): {df.columns.tolist()}")
+
+# 🔥 FIX: Flatten MultiIndex columns if present
+if isinstance(df.columns, pd.MultiIndex):
+    df.columns = df.columns.get_level_values(0)  # Take first level (Close, High, etc.)
+    print("✅ MultiIndex flattened to single level.")
+
+print(f"📊 Columns (flattened): {df.columns.tolist()}")
 
 # Calculate EMA 200
 df['EMA_200'] = ta.ema(df['Close'], length=200)
