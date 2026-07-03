@@ -1,6 +1,6 @@
 import yfinance as yf
 import pandas as pd
-import pandas as ta
+import pandas_ta as ta
 import warnings
 warnings.filterwarnings('ignore')
 from datetime import datetime, timedelta
