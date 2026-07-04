@@ -49,6 +49,7 @@ def get_nifty500_tickers():
 STOCKS = get_nifty500_tickers()
 print(f"📊 Total stocks to scan: {len(STOCKS)}")
 print("⏱️ 7 Timeframes: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly")
+print("📊 Volume Surge: > 1.5x 20-period average")
 
 # ======================================================
 # 📊 FUNDAMENTALS SCORING
@@ -75,7 +76,7 @@ def get_fundamentals(ticker):
         return None
 
 # ======================================================
-# 📈 TECHNICAL ANALYSIS (7 TIMEFRAMES)
+# 📈 TECHNICAL ANALYSIS (with Volume Surge)
 # ======================================================
 def flatten_multiindex(df):
     if df is None or df.empty:
@@ -87,21 +88,21 @@ def flatten_multiindex(df):
 
 def analyze_df(df):
     if df is None or df.empty or len(df) < 50:
-        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': ''}
+        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
     df = flatten_multiindex(df.copy())
     df['EMA_200'] = ta.ema(df['Close'], length=200)
     if df['EMA_200'].isna().all():
-        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': ''}
+        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
-    # Crossover Check
+    # 🟢 1. Crossover Check
     prev_c = df['Close'].iloc[-2]
     curr_c = df['Close'].iloc[-1]
     prev_e = df['EMA_200'].iloc[-2]
     curr_e = df['EMA_200'].iloc[-1]
     ema_cross = (prev_c < prev_e) and (curr_c > curr_e)
     
-    # 🕯️ Pattern Detection
+    # 🟢 2. Bullish Pattern Detection
     pattern_name = ""
     pattern_detected = False
     if ema_cross:
@@ -124,11 +125,20 @@ def analyze_df(df):
             if ms is not None and not ms.empty and len(ms) > 0 and ms.iloc[-1] > 0:
                 pattern_detected = True; pattern_name = "Morning Star"
     
+    # 🟢 3. Volume Surge Check (Last candle volume > 1.5x 20-period avg)
+    volume_surge = False
+    if ema_cross and 'Volume' in df.columns and len(df) >= 20:
+        avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
+        curr_vol = df['Volume'].iloc[-1]
+        if avg_vol > 0 and curr_vol > (avg_vol * 1.5):
+            volume_surge = True
+    
     return {
         'ema': ema_cross,
         'pattern': pattern_detected,
         'signal': ema_cross and pattern_detected,
-        'pattern_name': pattern_name
+        'pattern_name': pattern_name,
+        'volume_surge': volume_surge   # 🔥 Naya flag
     }
 
 # ======================================================
@@ -145,10 +155,10 @@ def scan_stock(ticker):
             return None
         df15 = flatten_multiindex(df15)
         
-        # 🔥 Resample 15m -> 30m, 1H, 4H
-        df30 = df15.resample('30min').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
-        df1h = df15.resample('1h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
-        df4h = df15.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
+        # 🔥 Resample 15m -> 30m, 1H, 4H (ADDED Volume Sum)
+        df30 = df15.resample('30min').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+        df1h = df15.resample('1h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+        df4h = df15.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         
         # 🔥 Fetch Daily Data
         dfd = yf.download(ticker, period='60d', interval='1d', progress=False, auto_adjust=True)
@@ -157,9 +167,9 @@ def scan_stock(ticker):
             return None
         dfd = flatten_multiindex(dfd)
         
-        # 🔥 Resample Daily -> Weekly, Monthly
-        dfw = dfd.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
-        dfm = dfd.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last'}).dropna()
+        # 🔥 Resample Daily -> Weekly, Monthly (ADDED Volume Sum)
+        dfw = dfd.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
+        dfm = dfd.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         
         # 🔥 Analyze ALL 7 Timeframes
         r15 = analyze_df(df15)
@@ -179,6 +189,7 @@ def scan_stock(ticker):
         # 🔥 Aggregated Signals (Across ALL 7 timeframes)
         has_ema = r15['ema'] or r30['ema'] or r1h['ema'] or r4h['ema'] or rd['ema'] or rw['ema'] or rm['ema']
         has_pattern = r15['pattern'] or r30['pattern'] or r1h['pattern'] or r4h['pattern'] or rd['pattern'] or rw['pattern'] or rm['pattern']
+        has_volume_surge = r15['volume_surge'] or r30['volume_surge'] or r1h['volume_surge'] or r4h['volume_surge'] or rd['volume_surge'] or rw['volume_surge'] or rm['volume_surge']
         
         funda_ok = funda['score'] >= 3
         
@@ -204,6 +215,7 @@ def scan_stock(ticker):
             'funda': funda,
             'has_ema': has_ema,
             'has_pattern': has_pattern,
+            'has_volume_surge': has_volume_surge,  # 🔥 Naya
             'funda_ok': funda_ok,
             'cat_pattern_funda': cat_pattern_funda,
             'cat_pattern_nofunda': cat_pattern_nofunda,
@@ -253,6 +265,7 @@ def create_stock_charts(result):
     ticker = result['ticker']; name = result['name']
     funda = result['funda']
     rec = result['final_recommendation']
+    volume_surge = result['has_volume_surge']
     
     # List of (dataframe, result, title_suffix)
     tf_list = [
@@ -278,7 +291,8 @@ def create_stock_charts(result):
         ap_ema = mpf.make_addplot(df['EMA_200'], color='orange', width=1.5)
         
         pattern_name = cross_data.get('pattern_name', '')
-        title = f"{ticker} - {name[:15]} ({tf_name}) | {rec}\nPattern: {pattern_name if pattern_name else 'None'}"
+        vol_tag = "🔊 Volume Surge!" if cross_data.get('volume_surge', False) else ""
+        title = f"{ticker} - {name[:15]} ({tf_name}) | {rec}\nPattern: {pattern_name if pattern_name else 'None'} {vol_tag}"
         
         fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
                              volume=False, figsize=(10, 5), returnfig=True,
@@ -308,6 +322,7 @@ def create_stock_charts(result):
     📊 {ticker} - {name}
     ========================================
     🏷️ Recommendation: {rec}
+    🔊 Volume Surge: {'✅ YES' if volume_surge else '❌ NO'}
     ----------------------------------------
     📈 Fundamentals Score: {funda['score']}/5
     PE: {funda['pe']:.2f} | ROE: {funda['roe']*100:.2f}%
@@ -315,13 +330,13 @@ def create_stock_charts(result):
     Revenue Growth: {funda['growth']*100:.2f}%
     ----------------------------------------
     🔍 Signal Summary (7 Timeframes):
-    15m:   {'✅' if result['r15']['signal'] else '❌'} ({result['r15']['pattern_name'] or 'None'})
-    30m:   {'✅' if result['r30']['signal'] else '❌'} ({result['r30']['pattern_name'] or 'None'})
-    1H:    {'✅' if result['r1h']['signal'] else '❌'} ({result['r1h']['pattern_name'] or 'None'})
-    4H:    {'✅' if result['r4h']['signal'] else '❌'} ({result['r4h']['pattern_name'] or 'None'})
-    Daily: {'✅' if result['rd']['signal'] else '❌'} ({result['rd']['pattern_name'] or 'None'})
-    Weekly:{'✅' if result['rw']['signal'] else '❌'} ({result['rw']['pattern_name'] or 'None'})
-    Monthly:{'✅' if result['rm']['signal'] else '❌'} ({result['rm']['pattern_name'] or 'None'})
+    15m:   {'✅' if result['r15']['signal'] else '❌'} ({result['r15']['pattern_name'] or 'None'}) {'🔊' if result['r15']['volume_surge'] else ''}
+    30m:   {'✅' if result['r30']['signal'] else '❌'} ({result['r30']['pattern_name'] or 'None'}) {'🔊' if result['r30']['volume_surge'] else ''}
+    1H:    {'✅' if result['r1h']['signal'] else '❌'} ({result['r1h']['pattern_name'] or 'None'}) {'🔊' if result['r1h']['volume_surge'] else ''}
+    4H:    {'✅' if result['r4h']['signal'] else '❌'} ({result['r4h']['pattern_name'] or 'None'}) {'🔊' if result['r4h']['volume_surge'] else ''}
+    Daily: {'✅' if result['rd']['signal'] else '❌'} ({result['rd']['pattern_name'] or 'None'}) {'🔊' if result['rd']['volume_surge'] else ''}
+    Weekly:{'✅' if result['rw']['signal'] else '❌'} ({result['rw']['pattern_name'] or 'None'}) {'🔊' if result['rw']['volume_surge'] else ''}
+    Monthly:{'✅' if result['rm']['signal'] else '❌'} ({result['rm']['pattern_name'] or 'None'}) {'🔊' if result['rm']['volume_surge'] else ''}
     """
     return charts + [info_text]
 
@@ -341,36 +356,45 @@ def main():
         res = scan_stock(t)
         if res:
             all_results.append(res)
-        time.sleep(0.5)  # Rate limiting
+        time.sleep(0.5)
     
     print(f"\n✅ Scan complete! Total processed: {len(all_results)}")
     
     # 🔥 Filter 4 Quadrants
-    cat1 = [r for r in all_results if r['cat_pattern_funda']]
-    cat2 = [r for r in all_results if r['cat_pattern_nofunda']]
-    cat3 = [r for r in all_results if r['cat_nopattern_funda']]
-    cat4 = [r for r in all_results if r['cat_nopattern_nofunda']]
+    cat1 = [r for r in all_results if r['cat_pattern_funda']]        # Pattern + Funda
+    cat2 = [r for r in all_results if r['cat_pattern_nofunda']]      # Pattern + No Funda
+    cat3 = [r for r in all_results if r['cat_nopattern_funda']]      # No Pattern + Funda
+    cat4 = [r for r in all_results if r['cat_nopattern_nofunda']]    # No Pattern + No Funda
+    
+    # 🔥 Extra: Volume Surge Stocks (Any stock with EMA + Pattern + Volume)
+    volume_stocks = [r for r in all_results if r['has_pattern'] and r['has_ema'] and r['has_volume_surge']]
     
     print("\n" + "="*60)
     print("📊 QUADRANT ANALYSIS RESULTS (7 Timeframes)")
     print("="*60)
-    print(f"🔥 1. With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks")
-    print(f"📈 2. With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks")
-    print(f"💪 3. No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks")
-    print(f"⛔ 4. No Pattern + No Funda (AVOID): {len(cat4)} stocks")
+    print(f"🔥 CAT 1: With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks")
+    print(f"📈 CAT 2: With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks")
+    print(f"💪 CAT 3: No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks")
+    print(f"⛔ CAT 4: No Pattern + No Funda (AVOID): {len(cat4)} stocks")
+    print(f"🔊 VOLUME SURGE: EMA + Pattern + Volume > 1.5x Avg: {len(volume_stocks)} stocks")
     
-    # If no stocks in Cat1, send simpler email
-    if not cat1 and not cat2 and not cat3:
+    # If no stocks in Cat1, Cat2, Cat3, send simpler email
+    if not cat1 and not cat2 and not cat3 and not volume_stocks:
         send_email_with_pdf(
             pdf_path=None,
             subject=f"📊 SPRZ Scan - {datetime.now().strftime('%d-%b-%Y')}",
-            body=f"No significant signals found today.\nScanned {len(STOCKS)} stocks (7 timeframes).\n\nCat1 (Strong Buy): 0\nCat2 (Tech Watch): {len(cat2)}\nCat3 (Funda Watch): {len(cat3)}\nCat4 (Avoid): {len(cat4)}"
+            body=f"No significant signals found today.\nScanned {len(STOCKS)} stocks (7 timeframes).\n\n" + \
+                 f"🔥 CAT 1 (Pattern + Funda): 0\n" + \
+                 f"📈 CAT 2 (Pattern + No Funda): 0\n" + \
+                 f"💪 CAT 3 (No Pattern + Funda): 0\n" + \
+                 f"⛔ CAT 4 (No Pattern + No Funda): {len(cat4)}\n" + \
+                 f"🔊 Volume Surge (Pattern + Volume): 0"
         )
         print("No significant signals. Email sent without PDF.")
         return
     
-    # 📄 PDF Generate - Include Cat1, Cat2, Cat3
-    stocks_to_show = cat1 + cat2 + cat3
+    # 📄 PDF Generate - Include Cat1, Cat2, Cat3, and Volume Stocks (deduplicate)
+    stocks_to_show = list({r['ticker']: r for r in (cat1 + cat2 + cat3 + volume_stocks)}.values())
     pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
     
     with PdfPages(pdf_path) as pdf:
@@ -390,48 +414,52 @@ def main():
         {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat3]) if cat3 else "     (None)"}
         
         ⛔ CAT 4: No Pattern + No Funda (AVOID) → {len(cat4)} stocks (Not shown)
+        
+        🔊 VOLUME SURGE (EMA + Pattern + High Volume) → {len(volume_stocks)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in volume_stocks]) if volume_stocks else "     (None)"}
         ============================================================
         📈 Total EMA Crossovers: {len([r for r in all_results if r['has_ema']])}
         🕯️ Total Patterns Detected: {len([r for r in all_results if r['has_pattern']])}
         ⏱️ Timeframes Used: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly
         """
-        ax_summary.text(0.05, 0.95, summary_text, fontsize=12, family='monospace', verticalalignment='top')
+        ax_summary.text(0.05, 0.95, summary_text, fontsize=11, family='monospace', verticalalignment='top')
         pdf.savefig(fig_summary)
         plt.close(fig_summary)
         
-        # Charts for each stock (7 charts + info)
+        # Charts for each stock
         for idx, stock in enumerate(stocks_to_show):
             print(f"  Generating charts for {stock['ticker']} ({idx+1}/{len(stocks_to_show)})...")
             chart_data = create_stock_charts(stock)
-            # Add 7 charts
             for i in range(7):
                 if i < len(chart_data) and chart_data[i]:
                     pdf.savefig(chart_data[i])
                     plt.close(chart_data[i])
-            # Add info page
             fig_info, ax_info = plt.subplots(figsize=(12, 8))
             ax_info.axis('off')
-            ax_info.text(0.05, 0.95, chart_data[7], fontsize=11, family='monospace', verticalalignment='top')
+            ax_info.text(0.05, 0.95, chart_data[7], fontsize=10, family='monospace', verticalalignment='top')
             pdf.savefig(fig_info)
             plt.close(fig_info)
     
     print(f"✅ PDF generated: {pdf_path}")
     
     # 📧 Email
-    subject = f"🚀 SPRZ Scan (7TFs) - Cat1:{len(cat1)} | Cat2:{len(cat2)} | Cat3:{len(cat3)} ({datetime.now().strftime('%d-%b-%Y')})"
+    subject = f"🚀 SPRZ Scan (7TFs) - Cat1:{len(cat1)} | Cat2:{len(cat2)} | Cat3:{len(cat3)} | Vol:{len(volume_stocks)} ({datetime.now().strftime('%d-%b-%Y')})"
     body = f"""
     Hi,
     
     ✅ Scan complete with 7 Timeframes (15m, 30m, 1H, 4H, Daily, Weekly, Monthly)!
     
-    🔥 1. With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks
+    🔥 CAT 1: With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks
     {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat1]) if cat1 else "    (None)"}
     
-    📈 2. With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks
+    📈 CAT 2: With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks
     {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat2]) if cat2 else "    (None)"}
     
-    💪 3. No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks
+    💪 CAT 3: No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks
     {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat3]) if cat3 else "    (None)"}
+    
+    🔊 VOLUME SURGE (EMA + Pattern + High Volume): {len(volume_stocks)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in volume_stocks]) if volume_stocks else "    (None)"}
     
     📊 Full PDF report attached with 7 timeframe charts for each stock.
     
