@@ -6,7 +6,7 @@ warnings.filterwarnings('ignore')
 from datetime import datetime, timedelta
 
 # ==============================================
-# 🔥 TEST STOCKS (10 Nifty stocks - Fast)
+# 🔥 TOP 10 STOCKS (Fast test ke liye)
 # ==============================================
 TEST_STOCKS = [
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
@@ -14,7 +14,7 @@ TEST_STOCKS = [
 ]
 
 # ==============================================
-# 📈 MANUAL PATTERN DETECTION (No pandas_ta dependency)
+# 📈 EXACT SAME FUNCTIONS AS SCANNER (With try-except)
 # ==============================================
 def flatten_multiindex(df):
     if df is None or df.empty:
@@ -24,87 +24,14 @@ def flatten_multiindex(df):
         df.columns = [col.split('_')[0] for col in df.columns]
     return df
 
-def detect_bullish_engulfing(df, i):
-    """Manual Bullish Engulfing detection"""
-    if i < 1:
-        return False
-    prev_open = df['Open'].iloc[i-1]
-    prev_close = df['Close'].iloc[i-1]
-    curr_open = df['Open'].iloc[i]
-    curr_close = df['Close'].iloc[i]
-    # Bearish candle (prev) -> Bullish candle (curr) with engulf
-    if prev_close < prev_open and curr_close > curr_open:
-        if curr_open < prev_close and curr_close > prev_open:
-            return True
-    return False
-
-def detect_hammer(df, i):
-    """Manual Hammer detection"""
-    if i < 1:
-        return False
-    open_price = df['Open'].iloc[i]
-    high = df['High'].iloc[i]
-    low = df['Low'].iloc[i]
-    close = df['Close'].iloc[i]
-    body = abs(close - open_price)
-    lower_wick = min(open_price, close) - low
-    upper_wick = high - max(open_price, close)
-    # Hammer: lower wick >= 2*body, upper wick <= body/2, body > 0
-    if body > 0 and lower_wick >= 2*body and upper_wick <= body/2:
-        return True
-    return False
-
-def detect_dragonfly_doji(df, i):
-    """Manual Dragonfly Doji detection"""
-    if i < 1:
-        return False
-    open_price = df['Open'].iloc[i]
-    high = df['High'].iloc[i]
-    low = df['Low'].iloc[i]
-    close = df['Close'].iloc[i]
-    body = abs(close - open_price)
-    lower_wick = min(open_price, close) - low
-    upper_wick = high - max(open_price, close)
-    # Doji: body <= 0.1 * (high-low), lower wick >= 2*body, upper wick <= body
-    if (high - low) > 0 and body <= 0.1 * (high - low) and lower_wick >= 2*body and upper_wick <= body:
-        return True
-    return False
-
-def detect_morning_star(df, i):
-    """Manual Morning Star detection (simplified)"""
-    if i < 2:
-        return False
-    # Candle 1: Bearish (prev day)
-    c1_open = df['Open'].iloc[i-2]
-    c1_close = df['Close'].iloc[i-2]
-    c1_bearish = c1_close < c1_open
-    
-    # Candle 2: Doji / Small body (middle)
-    c2_open = df['Open'].iloc[i-1]
-    c2_close = df['Close'].iloc[i-1]
-    c2_range = df['High'].iloc[i-1] - df['Low'].iloc[i-1]
-    c2_body = abs(c2_close - c2_open)
-    c2_doji = (c2_range > 0 and c2_body <= 0.1 * c2_range)
-    
-    # Candle 3: Bullish (current)
-    c3_open = df['Open'].iloc[i]
-    c3_close = df['Close'].iloc[i]
-    c3_bullish = c3_close > c3_open
-    
-    # Gap between c1 and c2 (c2 low > c1 close) and c2 to c3 (c3 open > c2 close)
-    if c1_bearish and c2_doji and c3_bullish:
-        if df['Low'].iloc[i-1] > c1_close and c3_open > df['High'].iloc[i-1]:
-            return True
-    return False
-
 def analyze_df(df):
     if df is None or df.empty or len(df) < 50:
-        return {'ema': False, 'pattern': False, 'volume_surge': False}
+        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
     df = flatten_multiindex(df.copy())
     df['EMA_200'] = ta.ema(df['Close'], length=200)
     if df['EMA_200'].isna().all():
-        return {'ema': False, 'pattern': False, 'volume_surge': False}
+        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
     # 1. Crossover
     prev_c = df['Close'].iloc[-2]
@@ -113,20 +40,42 @@ def analyze_df(df):
     curr_e = df['EMA_200'].iloc[-1]
     ema_cross = (prev_c < prev_e) and (curr_c > curr_e)
     
-    # 2. Pattern Detection (Manual)
+    # 2. Pattern Detection (WITH try-except to avoid AttributeError)
+    pattern_name = ""
     pattern_detected = False
     if ema_cross:
-        last_idx = len(df) - 1
-        if detect_bullish_engulfing(df, last_idx):
-            pattern_detected = True
-        elif detect_hammer(df, last_idx):
-            pattern_detected = True
-        elif detect_dragonfly_doji(df, last_idx):
-            pattern_detected = True
-        elif detect_morning_star(df, last_idx):
-            pattern_detected = True
+        try:
+            engulf = ta.cdl_engulfing(df['Open'], df['High'], df['Low'], df['Close'])
+            if engulf is not None and not engulf.empty and len(engulf) > 0 and engulf.iloc[-1] > 0:
+                pattern_detected = True; pattern_name = "Bullish Engulfing"
+        except:
+            pass
+        
+        if not pattern_detected:
+            try:
+                hammer = ta.cdl_hammer(df['Open'], df['High'], df['Low'], df['Close'])
+                if hammer is not None and not hammer.empty and len(hammer) > 0 and hammer.iloc[-1] > 0:
+                    pattern_detected = True; pattern_name = "Hammer"
+            except:
+                pass
+        
+        if not pattern_detected:
+            try:
+                dragon = ta.cdl_dragonfly_doji(df['Open'], df['High'], df['Low'], df['Close'])
+                if dragon is not None and not dragon.empty and len(dragon) > 0 and dragon.iloc[-1] > 0:
+                    pattern_detected = True; pattern_name = "Dragonfly Doji"
+            except:
+                pass
+        
+        if not pattern_detected:
+            try:
+                ms = ta.cdl_morning_star(df['Open'], df['High'], df['Low'], df['Close'])
+                if ms is not None and not ms.empty and len(ms) > 0 and ms.iloc[-1] > 0:
+                    pattern_detected = True; pattern_name = "Morning Star"
+            except:
+                pass
     
-    # 3. Volume Surge
+    # 3. Volume Surge (Last candle volume > 1.5x 20-period avg)
     volume_surge = False
     if ema_cross and 'Volume' in df.columns and len(df) >= 20:
         avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
@@ -137,6 +86,8 @@ def analyze_df(df):
     return {
         'ema': ema_cross,
         'pattern': pattern_detected,
+        'signal': ema_cross and pattern_detected,
+        'pattern_name': pattern_name,
         'volume_surge': volume_surge
     }
 
@@ -160,7 +111,7 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
     
     trades_ema = []      # Strategy A: Sirf EMA
     trades_pattern = []  # Strategy B: EMA + Pattern
-    trades_volume = []   # Strategy C: EMA + Pattern + Volume
+    trades_volume = []   # Strategy C: EMA + Pattern + Volume Surge
     
     for i in range(250, len(df) - max(hold_days)):
         slice_df = df.iloc[:i+1].copy()
@@ -170,7 +121,7 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
             entry_price = df['Close'].iloc[i]
             entry_date = df.index[i]
             
-            # --- A: Sirf EMA ---
+            # --- Strategy A: Sirf EMA ---
             for days in hold_days:
                 exit_idx = min(i + days, len(df) - 1)
                 exit_price = df['Close'].iloc[exit_idx]
@@ -183,7 +134,7 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
                     'Win': return_pct > 0
                 })
             
-            # --- B: EMA + Pattern ---
+            # --- Strategy B: EMA + Pattern ---
             if signals['pattern']:
                 for days in hold_days:
                     exit_idx = min(i + days, len(df) - 1)
@@ -197,7 +148,7 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
                         'Win': return_pct > 0
                     })
                 
-                # --- C: EMA + Pattern + Volume Surge ---
+                # --- Strategy C: EMA + Pattern + Volume Surge ---
                 if signals['volume_surge']:
                     for days in hold_days:
                         exit_idx = min(i + days, len(df) - 1)
@@ -220,7 +171,7 @@ def backtest_stock(ticker, years=3, hold_days=[5, 10, 20]):
     }
 
 # ==============================================
-# 📊 SUMMARY
+# 📊 SUMMARY PRINTER
 # ==============================================
 def print_summary(df, strategy_name):
     if df is None or df.empty:
@@ -236,11 +187,16 @@ def print_summary(df, strategy_name):
         if not subset.empty:
             win_rate = (subset['Win'].sum() / len(subset)) * 100
             avg_return = subset['Return_%'].mean()
-            print(f"   Hold {days}d: {len(subset)} trades, Win Rate: {win_rate:.1f}%, Avg: {avg_return:.2f}%")
+            max_return = subset['Return_%'].max()
+            min_return = subset['Return_%'].min()
+            print(f"   Hold {days}d: {len(subset)} trades, Win Rate: {win_rate:.1f}%, Avg: {avg_return:.2f}%, Max: {max_return:.2f}%, Min: {min_return:.2f}%")
     
     return {
         'total_trades': total_trades,
+        'win_rate_5d': (df[df['Hold_Days']==5]['Win'].sum() / len(df[df['Hold_Days']==5])) * 100 if len(df[df['Hold_Days']==5]) > 0 else 0,
+        'win_rate_10d': (df[df['Hold_Days']==10]['Win'].sum() / len(df[df['Hold_Days']==10])) * 100 if len(df[df['Hold_Days']==10]) > 0 else 0,
         'win_rate_20d': (df[df['Hold_Days']==20]['Win'].sum() / len(df[df['Hold_Days']==20])) * 100 if len(df[df['Hold_Days']==20]) > 0 else 0,
+        'avg_return_5d': df[df['Hold_Days']==5]['Return_%'].mean() if len(df[df['Hold_Days']==5]) > 0 else 0,
     }
 
 # ==============================================
@@ -248,12 +204,14 @@ def print_summary(df, strategy_name):
 # ==============================================
 if __name__ == "__main__":
     print("="*70)
-    print("🔥 SAFE BACKTEST: EMA vs Pattern vs Volume Surge (No pandas_ta dependency)")
-    print(f"📊 Testing {len(TEST_STOCKS)} stocks for 3 years")
+    print("🔥 FINAL BACKTEST: EMA vs Pattern vs Volume Surge")
+    print(f"📊 Testing {len(TEST_STOCKS)} stocks for 3 years (Daily timeframe)")
     print("⏱️ Estimated time: 5-10 minutes")
     print("="*70)
     
-    all_ema = []; all_pattern = []; all_volume = []
+    all_ema = []
+    all_pattern = []
+    all_volume = []
     
     for i, stock in enumerate(TEST_STOCKS):
         print(f"[{i+1}/{len(TEST_STOCKS)}] ", end="")
@@ -266,6 +224,7 @@ if __name__ == "__main__":
             if res['volume'] is not None:
                 all_volume.append(res['volume'])
     
+    # Combine results
     df_ema = pd.concat(all_ema, ignore_index=True) if all_ema else None
     df_pattern = pd.concat(all_pattern, ignore_index=True) if all_pattern else None
     df_volume = pd.concat(all_volume, ignore_index=True) if all_volume else None
@@ -274,28 +233,52 @@ if __name__ == "__main__":
     print("📈 BACKTEST COMPARISON RESULTS (3 Years, 10 Nifty Stocks)")
     print("="*70)
     
-    s_ema = print_summary(df_ema, "🔵 STRATEGY A: EMA Crossover Only")
-    s_pattern = print_summary(df_pattern, "🟢 STRATEGY B: EMA + Pattern")
-    s_volume = print_summary(df_volume, "🔴 STRATEGY C: EMA + Pattern + Volume Surge")
+    summary_ema = print_summary(df_ema, "🔵 STRATEGY A: EMA Crossover Only")
+    summary_pattern = print_summary(df_pattern, "🟢 STRATEGY B: EMA + Pattern")
+    summary_volume = print_summary(df_volume, "🔴 STRATEGY C: EMA + Pattern + Volume Surge (>1.5x Avg)")
     
+    # ================= FINAL INTERPRETATION =================
     print("\n" + "="*70)
     print("💡 FINAL INTERPRETATION")
     print("="*70)
     
-    if s_ema and s_pattern and s_volume:
-        print(f"📌 Pattern filter ne {((s_ema['total_trades'] - s_pattern['total_trades'])/s_ema['total_trades']*100):.1f}% trades reduce kar diye.")
-        print(f"📌 Volume Surge filter ne {((s_ema['total_trades'] - s_volume['total_trades'])/s_ema['total_trades']*100):.1f}% trades reduce kar diye.")
+    if summary_ema and summary_pattern and summary_volume:
+        reduction = ((summary_ema['total_trades'] - summary_pattern['total_trades']) / summary_ema['total_trades']) * 100 if summary_ema['total_trades'] > 0 else 0
+        reduction_vol = ((summary_ema['total_trades'] - summary_volume['total_trades']) / summary_ema['total_trades']) * 100 if summary_ema['total_trades'] > 0 else 0
+        
+        print(f"📌 Pattern filter ne {reduction:.1f}% trades reduce kar diye.")
+        print(f"📌 Volume Surge filter ne {reduction_vol:.1f}% trades reduce kar diye.")
         print()
         print("🔍 Win Rate Comparison (20 Days Hold):")
-        print(f"   EMA Only        : {s_ema['win_rate_20d']:.1f}%")
-        print(f"   EMA + Pattern   : {s_pattern['win_rate_20d']:.1f}%")
-        print(f"   EMA + Pattern + Volume : {s_volume['win_rate_20d']:.1f}%")
+        print(f"   EMA Only        : {summary_ema['win_rate_20d']:.1f}%")
+        print(f"   EMA + Pattern   : {summary_pattern['win_rate_20d']:.1f}%")
+        print(f"   EMA + Pattern + Volume : {summary_volume['win_rate_20d']:.1f}%")
+        print()
+        
+        if summary_pattern['win_rate_20d'] > summary_ema['win_rate_20d']:
+            print("✅ PATTERN add karne se Win Rate IMPROVE hui hai — isko compulsory rakho.")
+        else:
+            print("⚠️ PATTERN add karne se Win Rate GIR gaya hai — isko optional rakh sakte ho.")
+        
+        if summary_volume['win_rate_20d'] > summary_pattern['win_rate_20d']:
+            print("✅ VOLUME SURGE add karne se Win Rate aur IMPROVE hui hai — isko 'Strong Buy' filter rakho.")
+        elif summary_volume['win_rate_20d'] > summary_ema['win_rate_20d']:
+            print("✅ VOLUME SURGE ne EMA se toh better kiya, lekin Pattern se kam — useful hai.")
+        else:
+            print("⚠️ VOLUME SURGE ne performance degrade kardi — isko optional rakh sakte ho.")
     
+    # Save CSVs
     if df_ema is not None:
         df_ema.to_csv('backtest_ema_only.csv', index=False)
+        print("\n✅ EMA Only results saved to 'backtest_ema_only.csv'")
     if df_pattern is not None:
         df_pattern.to_csv('backtest_ema_pattern.csv', index=False)
+        print("✅ EMA + Pattern results saved to 'backtest_ema_pattern.csv'")
     if df_volume is not None:
         df_volume.to_csv('backtest_ema_pattern_volume.csv', index=False)
+        print("✅ EMA + Pattern + Volume results saved to 'backtest_ema_pattern_volume.csv'")
     
-    print("\n✅ CSVs saved. Done!")
+    print("\n" + "="*70)
+    print("🔔 NOTE: Fundamentals (PE/ROE) is backtest mein include nahi hain.")
+    print("   Live scanner mein Fundamentals filter apply hota hai (Score >= 3).")
+    print("   Ye backtest sirf TECHNICAL EDGE (EMA, Pattern, Volume) ka test hai.")
