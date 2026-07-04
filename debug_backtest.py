@@ -14,7 +14,59 @@ TEST_STOCKS = [
 ]
 
 # ==============================================
-# 📈 EXACT SAME FUNCTIONS AS SCANNER (With try-except)
+# 📈 CUSTOM PATTERN DETECTION (No pandas_ta dependency)
+# ==============================================
+def detect_patterns(df):
+    """Bullish patterns detect karo WITHOUT pandas_ta"""
+    if len(df) < 3:
+        return False, ""
+    
+    # Current candle
+    open_c = df['Open'].iloc[-1]
+    high_c = df['High'].iloc[-1]
+    low_c = df['Low'].iloc[-1]
+    close_c = df['Close'].iloc[-1]
+    body_c = abs(close_c - open_c)
+    
+    # Previous candle
+    open_p = df['Open'].iloc[-2]
+    high_p = df['High'].iloc[-2]
+    low_p = df['Low'].iloc[-2]
+    close_p = df['Close'].iloc[-2]
+    body_p = abs(close_p - open_p)
+    
+    # Bullish Engulfing
+    is_bullish_engulf = False
+    if (open_c < close_c) and (open_p > close_p):  # Current bullish, Previous bearish
+        if (open_c < close_p) and (close_c > open_p):  # Current engulfs previous
+            if body_c > (body_p * 1.2):  # Body zyada ho
+                is_bullish_engulf = True
+    
+    # Hammer (Lower wick > 2x body, Upper wick < 0.3x body)
+    is_hammer = False
+    if body_c > 0:
+        upper_wick = high_c - max(open_c, close_c)
+        lower_wick = min(open_c, close_c) - low_c
+        if (lower_wick > (body_c * 2)) and (upper_wick < (body_c * 0.3)):
+            is_hammer = True
+    
+    # Dragonfly Doji (body < 0.1x range, lower wick > 2x body)
+    is_dragonfly = False
+    candle_range = high_c - low_c
+    if candle_range > 0 and body_c < (candle_range * 0.1):
+        if (min(open_c, close_c) - low_c) > (candle_range * 0.7):
+            is_dragonfly = True
+    
+    if is_bullish_engulf:
+        return True, "Bullish Engulfing"
+    elif is_hammer:
+        return True, "Hammer"
+    elif is_dragonfly:
+        return True, "Dragonfly Doji"
+    return False, ""
+
+# ==============================================
+# 📈 TECHNICAL ANALYSIS (WITHOUT pandas_ta patterns)
 # ==============================================
 def flatten_multiindex(df):
     if df is None or df.empty:
@@ -29,7 +81,14 @@ def analyze_df(df):
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
     df = flatten_multiindex(df.copy())
-    df['EMA_200'] = ta.ema(df['Close'], length=200)
+    
+    # EMA 200 (pandas_ta only for EMA)
+    try:
+        df['EMA_200'] = ta.ema(df['Close'], length=200)
+    except:
+        # Fallback: agar pandas_ta fail ho toh manually calculate
+        df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+    
     if df['EMA_200'].isna().all():
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
@@ -40,42 +99,13 @@ def analyze_df(df):
     curr_e = df['EMA_200'].iloc[-1]
     ema_cross = (prev_c < prev_e) and (curr_c > curr_e)
     
-    # 2. Pattern Detection (WITH try-except to avoid AttributeError)
+    # 2. Pattern Detection (Custom, no pandas_ta)
     pattern_name = ""
     pattern_detected = False
     if ema_cross:
-        try:
-            engulf = ta.cdl_engulfing(df['Open'], df['High'], df['Low'], df['Close'])
-            if engulf is not None and not engulf.empty and len(engulf) > 0 and engulf.iloc[-1] > 0:
-                pattern_detected = True; pattern_name = "Bullish Engulfing"
-        except:
-            pass
-        
-        if not pattern_detected:
-            try:
-                hammer = ta.cdl_hammer(df['Open'], df['High'], df['Low'], df['Close'])
-                if hammer is not None and not hammer.empty and len(hammer) > 0 and hammer.iloc[-1] > 0:
-                    pattern_detected = True; pattern_name = "Hammer"
-            except:
-                pass
-        
-        if not pattern_detected:
-            try:
-                dragon = ta.cdl_dragonfly_doji(df['Open'], df['High'], df['Low'], df['Close'])
-                if dragon is not None and not dragon.empty and len(dragon) > 0 and dragon.iloc[-1] > 0:
-                    pattern_detected = True; pattern_name = "Dragonfly Doji"
-            except:
-                pass
-        
-        if not pattern_detected:
-            try:
-                ms = ta.cdl_morning_star(df['Open'], df['High'], df['Low'], df['Close'])
-                if ms is not None and not ms.empty and len(ms) > 0 and ms.iloc[-1] > 0:
-                    pattern_detected = True; pattern_name = "Morning Star"
-            except:
-                pass
+        pattern_detected, pattern_name = detect_patterns(df)
     
-    # 3. Volume Surge (Last candle volume > 1.5x 20-period avg)
+    # 3. Volume Surge
     volume_surge = False
     if ema_cross and 'Volume' in df.columns and len(df) >= 20:
         avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
