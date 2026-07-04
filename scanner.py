@@ -1,41 +1,53 @@
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import warnings
-warnings.filterwarnings('ignore')
-from datetime import datetime, timedelta
+import mplfinance as mpf
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import os
 import time
+from datetime import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email.mime.text import MIMEText
 from email import encoders
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-import mplfinance as mpf
+import warnings
+warnings.filterwarnings('ignore')
 
 # ======================================================
-# 🔥 CHECK pandas_ta INSTALLATION
+# 🔥 CONFIG
 # ======================================================
-try:
-    import pandas_ta as ta
-    print("✅ pandas_ta loaded successfully.")
-except ImportError:
-    print("❌ pandas_ta not installed! Using manual EMA fallback.")
-    ta = None
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT")
 
 # ======================================================
-# 📈 EMA CALCULATION (Fallback if pandas_ta missing)
+# 📥 NIFTY 500 FETCH
 # ======================================================
-def calc_ema(series, length):
-    if ta is not None:
-        try:
-            return ta.ema(series, length=length)
-        except:
-            pass
-    # Manual EMA calculation
-    return series.ewm(span=length, adjust=False).mean()
+def get_nifty500_tickers():
+    fallback_list = [
+        "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS",
+        "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+        "BAJFINANCE.NS", "WIPRO.NS", "HCLTECH.NS", "ASIANPAINT.NS", "AXISBANK.NS",
+        "LT.NS", "MARUTI.NS", "TITAN.NS", "SUNPHARMA.NS", "ULTRACEMCO.NS"
+    ]
+    try:
+        print("📥 Fetching Nifty 500 list from NSE...")
+        url = "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        df = pd.read_csv(url)
+        symbols = df['Symbol'].tolist()
+        nifty500 = [s + ".NS" for s in symbols]
+        print(f"✅ Fetched {len(nifty500)} stocks.")
+        return nifty500
+    except Exception as e:
+        print(f"⚠️ Fetch failed: {e}. Using fallback.")
+        return fallback_list
+
+STOCKS = get_nifty500_tickers()
+print(f"📊 Total stocks to scan: {len(STOCKS)}")
+print("⏱️ 7 Timeframes: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly")
 
 # ======================================================
 # 📊 FUNDAMENTALS SCORING
@@ -62,9 +74,22 @@ def get_fundamentals(ticker):
         return None
 
 # ======================================================
-# 🔍 PATTERN DETECTION (Manual)
+# 📈 CUSTOM TECHNICAL ANALYSIS (NO pandas-ta)
 # ======================================================
+def flatten_multiindex(df):
+    if df is None or df.empty:
+        return df
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = ['_'.join(col).strip() for col in df.columns.values]
+        df.columns = [col.split('_')[0] for col in df.columns]
+    return df
+
+def custom_ema(series, span=200):
+    """Calculate EMA using pandas ewm (built-in, no external lib)"""
+    return series.ewm(span=span, adjust=False).mean()
+
 def detect_patterns(df):
+    """Custom pattern detection without pandas-ta"""
     if len(df) < 3:
         return False, ""
     
@@ -75,6 +100,8 @@ def detect_patterns(df):
     body_c = abs(close_c - open_c)
     
     open_p = df['Open'].iloc[-2]
+    high_p = df['High'].iloc[-2]
+    low_p = df['Low'].iloc[-2]
     close_p = df['Close'].iloc[-2]
     body_p = abs(close_p - open_p)
     
@@ -99,29 +126,12 @@ def detect_patterns(df):
     
     return False, ""
 
-# ======================================================
-# 📈 TECHNICAL ANALYSIS
-# ======================================================
-def flatten_multiindex(df):
-    if df is None or df.empty:
-        return df
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = ['_'.join(col).strip() for col in df.columns.values]
-        df.columns = [col.split('_')[0] for col in df.columns]
-    return df
-
 def analyze_df(df):
     if df is None or df.empty or len(df) < 50:
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
     df = flatten_multiindex(df.copy())
-    
-    # EMA 200 (with fallback)
-    try:
-        df['EMA_200'] = calc_ema(df['Close'], 200)
-    except:
-        df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-    
+    df['EMA_200'] = custom_ema(df['Close'], 200)
     if df['EMA_200'].isna().all():
         return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False}
     
@@ -155,31 +165,36 @@ def analyze_df(df):
     }
 
 # ======================================================
-# 🔍 SCAN SINGLE STOCK
+# 🔍 SCAN SINGLE STOCK (7 TIMEFRAMES)
 # ======================================================
 def scan_stock(ticker):
     try:
         print(f"  Scanning {ticker}...", end="")
         
+        # 15 Min Data
         df15 = yf.download(ticker, period='45d', interval='15m', progress=False, auto_adjust=True)
         if df15.empty or len(df15) < 100:
             print(" ❌ Insufficient 15m data")
             return None
         df15 = flatten_multiindex(df15)
         
+        # Resample 15m -> 30m, 1H, 4H (with Volume sum)
         df30 = df15.resample('30min').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         df1h = df15.resample('1h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         df4h = df15.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         
+        # Daily Data
         dfd = yf.download(ticker, period='60d', interval='1d', progress=False, auto_adjust=True)
         if dfd.empty or len(dfd) < 50:
             print(" ❌ Insufficient Daily data")
             return None
         dfd = flatten_multiindex(dfd)
         
+        # Weekly & Monthly
         dfw = dfd.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         dfm = dfd.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         
+        # Analyze all 7 timeframes
         r15 = analyze_df(df15)
         r30 = analyze_df(df30)
         r1h = analyze_df(df1h)
@@ -188,16 +203,20 @@ def scan_stock(ticker):
         rw = analyze_df(dfw)
         rm = analyze_df(dfm)
         
+        # Fundamentals
         funda = get_fundamentals(ticker)
         if funda is None:
             print(" ❌ No Funda data")
             return None
         
+        # Aggregated signals
         has_ema = r15['ema'] or r30['ema'] or r1h['ema'] or r4h['ema'] or rd['ema'] or rw['ema'] or rm['ema']
         has_pattern = r15['pattern'] or r30['pattern'] or r1h['pattern'] or r4h['pattern'] or rd['pattern'] or rw['pattern'] or rm['pattern']
         has_volume_surge = r15['volume_surge'] or r30['volume_surge'] or r1h['volume_surge'] or r4h['volume_surge'] or rd['volume_surge'] or rw['volume_surge'] or rm['volume_surge']
+        
         funda_ok = funda['score'] >= 3
         
+        # 4 Quadrants
         cat_pattern_funda = has_ema and has_pattern and funda_ok
         cat_pattern_nofunda = has_ema and has_pattern and not funda_ok
         cat_nopattern_funda = has_ema and not has_pattern and funda_ok
@@ -234,20 +253,16 @@ def scan_stock(ticker):
         return None
 
 # ======================================================
-# 📧 EMAIL SENDER
+# 📧 EMAIL SENDER & PDF GENERATOR (same as before)
 # ======================================================
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT")
-
 def send_email_with_pdf(pdf_path, subject, body):
     if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
         print("❌ Email config missing. Set GitHub Secrets.")
         return False
     msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_RECIPIENT; msg['Subject'] = subject
+    msg['From'] = EMAIL_SENDER
+    msg['To'] = EMAIL_RECIPIENT
+    msg['Subject'] = subject
     msg.attach(MIMEText(body, 'plain'))
     if pdf_path and os.path.exists(pdf_path):
         with open(pdf_path, 'rb') as f:
@@ -268,11 +283,9 @@ def send_email_with_pdf(pdf_path, subject, body):
         print(f"❌ Email error: {e}")
         return False
 
-# ======================================================
-# 📊 CHART + PDF GENERATOR (7 TIMEFRAMES)
-# ======================================================
 def create_stock_charts(result):
-    ticker = result['ticker']; name = result['name']
+    ticker = result['ticker']
+    name = result['name']
     funda = result['funda']
     rec = result['final_recommendation']
     volume_surge = result['has_volume_surge']
@@ -293,10 +306,7 @@ def create_stock_charts(result):
         if df is None or df.empty or len(df) < 10:
             return None
         df = flatten_multiindex(df.tail(90).copy())
-        try:
-            df['EMA_200'] = calc_ema(df['Close'], 200)
-        except:
-            df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        df['EMA_200'] = custom_ema(df['Close'], 200)
         
         mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', wick='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True)
@@ -351,7 +361,7 @@ def create_stock_charts(result):
     return charts + [info_text]
 
 # ======================================================
-# 🚀 MAIN
+# 🚀 MAIN FUNCTION
 # ======================================================
 def main():
     print(f"\n🔄 Scanning {len(STOCKS)} stocks (7 Timeframes)...")
@@ -368,4 +378,108 @@ def main():
             all_results.append(res)
         time.sleep(0.5)
     
-    # ... rest of the code (filtering, PDF, email) remains same as before ...
+    print(f"\n✅ Scan complete! Total processed: {len(all_results)}")
+    
+    cat1 = [r for r in all_results if r['cat_pattern_funda']]
+    cat2 = [r for r in all_results if r['cat_pattern_nofunda']]
+    cat3 = [r for r in all_results if r['cat_nopattern_funda']]
+    cat4 = [r for r in all_results if r['cat_nopattern_nofunda']]
+    volume_stocks = [r for r in all_results if r['has_pattern'] and r['has_ema'] and r['has_volume_surge']]
+    
+    print("\n" + "="*60)
+    print("📊 QUADRANT ANALYSIS RESULTS (7 Timeframes)")
+    print("="*60)
+    print(f"🔥 CAT 1: With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks")
+    print(f"📈 CAT 2: With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks")
+    print(f"💪 CAT 3: No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks")
+    print(f"⛔ CAT 4: No Pattern + No Funda (AVOID): {len(cat4)} stocks")
+    print(f"🔊 VOLUME SURGE: EMA + Pattern + Volume > 1.5x Avg: {len(volume_stocks)} stocks")
+    
+    if not cat1 and not cat2 and not cat3 and not volume_stocks:
+        send_email_with_pdf(
+            pdf_path=None,
+            subject=f"📊 SPRZ Scan - {datetime.now().strftime('%d-%b-%Y')}",
+            body=f"No significant signals found today.\nScanned {len(STOCKS)} stocks (7 timeframes).\n\n" + \
+                 f"🔥 CAT 1 (Pattern + Funda): 0\n" + \
+                 f"📈 CAT 2 (Pattern + No Funda): 0\n" + \
+                 f"💪 CAT 3 (No Pattern + Funda): 0\n" + \
+                 f"⛔ CAT 4 (No Pattern + No Funda): {len(cat4)}\n" + \
+                 f"🔊 Volume Surge (Pattern + Volume): 0"
+        )
+        print("No significant signals. Email sent without PDF.")
+        return
+    
+    stocks_to_show = list({r['ticker']: r for r in (cat1 + cat2 + cat3 + volume_stocks)}.values())
+    pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
+    
+    with PdfPages(pdf_path) as pdf:
+        fig_summary, ax_summary = plt.subplots(figsize=(16, 12))
+        ax_summary.axis('off')
+        summary_text = f"""
+        📊 SPRZ SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}
+        ============================================================
+        🔥 CAT 1: With Pattern + With Funda (STRONG BUY) → {len(cat1)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat1]) if cat1 else "     (None)"}
+        
+        📈 CAT 2: With Pattern + No Funda (TECH WATCH) → {len(cat2)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat2]) if cat2 else "     (None)"}
+        
+        💪 CAT 3: No Pattern + With Funda (FUNDA WATCH) → {len(cat3)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in cat3]) if cat3 else "     (None)"}
+        
+        ⛔ CAT 4: No Pattern + No Funda (AVOID) → {len(cat4)} stocks (Not shown)
+        
+        🔊 VOLUME SURGE (EMA + Pattern + High Volume) → {len(volume_stocks)} stocks
+        {chr(10).join([f"     - {s['ticker']} ({s['name']})" for s in volume_stocks]) if volume_stocks else "     (None)"}
+        ============================================================
+        📈 Total EMA Crossovers: {len([r for r in all_results if r['has_ema']])}
+        🕯️ Total Patterns Detected: {len([r for r in all_results if r['has_pattern']])}
+        ⏱️ Timeframes Used: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly
+        """
+        ax_summary.text(0.05, 0.95, summary_text, fontsize=11, family='monospace', verticalalignment='top')
+        pdf.savefig(fig_summary)
+        plt.close(fig_summary)
+        
+        for idx, stock in enumerate(stocks_to_show):
+            print(f"  Generating charts for {stock['ticker']} ({idx+1}/{len(stocks_to_show)})...")
+            chart_data = create_stock_charts(stock)
+            for i in range(7):
+                if i < len(chart_data) and chart_data[i]:
+                    pdf.savefig(chart_data[i])
+                    plt.close(chart_data[i])
+            fig_info, ax_info = plt.subplots(figsize=(12, 8))
+            ax_info.axis('off')
+            ax_info.text(0.05, 0.95, chart_data[7], fontsize=10, family='monospace', verticalalignment='top')
+            pdf.savefig(fig_info)
+            plt.close(fig_info)
+    
+    print(f"✅ PDF generated: {pdf_path}")
+    
+    subject = f"🚀 SPRZ Scan (7TFs) - Cat1:{len(cat1)} | Cat2:{len(cat2)} | Cat3:{len(cat3)} | Vol:{len(volume_stocks)} ({datetime.now().strftime('%d-%b-%Y')})"
+    body = f"""
+    Hi,
+    
+    ✅ Scan complete with 7 Timeframes (15m, 30m, 1H, 4H, Daily, Weekly, Monthly)!
+    
+    🔥 CAT 1: With Pattern + With Funda (STRONG BUY): {len(cat1)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat1]) if cat1 else "    (None)"}
+    
+    📈 CAT 2: With Pattern + No Funda (TECH WATCH): {len(cat2)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat2]) if cat2 else "    (None)"}
+    
+    💪 CAT 3: No Pattern + With Funda (FUNDA WATCH): {len(cat3)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in cat3]) if cat3 else "    (None)"}
+    
+    🔊 VOLUME SURGE (EMA + Pattern + High Volume): {len(volume_stocks)} stocks
+    {chr(10).join([f"    - {s['ticker']} ({s['name']})" for s in volume_stocks]) if volume_stocks else "    (None)"}
+    
+    📊 Full PDF report attached with 7 timeframe charts for each stock.
+    
+    Regards,
+    SPRZ Scanner Bot
+    """
+    
+    send_email_with_pdf(pdf_path, subject, body)
+
+if __name__ == "__main__":
+    main()
