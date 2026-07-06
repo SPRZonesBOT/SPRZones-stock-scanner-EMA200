@@ -296,7 +296,7 @@ def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
     </style></head>
     <body>
         <div class="header">
-            <h2>📊 SPRZ SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}</h2>
+            <h2>📊 SPRZones SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}</h2>
         </div>
         {html_table}
         <p style="color:#666; font-size:12px; margin-top:20px;">
