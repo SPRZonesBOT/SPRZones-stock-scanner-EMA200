@@ -3,7 +3,6 @@ import pandas as pd
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.table import Table
 import os
 import time
 from datetime import datetime
@@ -16,7 +15,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ======================================================
-# 🔥 FONT SETUP (Emoji Support)
+# 🔥 FONT SETUP
 # ======================================================
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
@@ -78,7 +77,7 @@ def get_fundamentals(ticker):
         return None
 
 # ======================================================
-# 📈 INDICATORS (RSI, MACD)
+# 📈 CUSTOM INDICATORS (RSI, MACD)
 # ======================================================
 def calculate_rsi(df, period=14):
     delta = df['Close'].diff()
@@ -274,11 +273,9 @@ def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
     msg['To'] = EMAIL_RECIPIENT
     msg['Subject'] = subject
     
-    # Plain text
     part_text = MIMEText(body_text, 'plain')
     msg.attach(part_text)
     
-    # HTML (with table)
     html_body = f"""
     <html>
     <head><style>
@@ -287,16 +284,11 @@ def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
         th {{ background-color: #1a237e; color: white; padding: 8px; text-align: left; border: 1px solid #ddd; }}
         td {{ padding: 8px; border: 1px solid #ddd; }}
         tr:nth-child(even) {{ background-color: #f2f2f2; }}
-        .strong-buy {{ background-color: #4CAF50; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
-        .tech-watch {{ background-color: #ff9800; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
-        .funda-watch {{ background-color: #2196F3; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
-        .avoid {{ background-color: #f44336; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
         .header {{ background-color: #0d47a1; color: white; padding: 10px; text-align: center; }}
-        .sub-header {{ background-color: #e3f2fd; padding: 5px 10px; margin: 5px 0; }}
     </style></head>
     <body>
         <div class="header">
-            <h2>📊 SPRZones - {datetime.now().strftime('%d-%b-%Y')}</h2>
+            <h2>📊 SPRZones SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}</h2>
         </div>
         {html_table}
         <p style="color:#666; font-size:12px; margin-top:20px;">
@@ -334,7 +326,7 @@ def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
 def create_stock_charts(result):
     ticker = result['ticker']; name = result['name']; sector = result['sector']
     funda = result['funda']; rec = result['final_recommendation']
-    vol_surge = result['has_volume_surge']; confluence = result['confluence_score']
+    confluence = result['confluence_score']
     
     tf_list = [
         (result['df15'], result['r15'], '15 Min'),
@@ -365,10 +357,9 @@ def create_stock_charts(result):
         
         fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
                              volume=False, figsize=(12, 6), returnfig=True,
-                             tight_layout=False,
-                             title=title)
-        
-        fig.subplots_adjust(left=0.08, right=0.92, top=0.88, bottom=0.12)
+                             tight_layout=False, title=title)
+        # 🔥 FIX: Proper padding so title, date, price are fully visible
+        fig.subplots_adjust(left=0.08, right=0.92, top=0.92, bottom=0.10)
         
         ax = axes[0]
         if pattern_name and cross_data.get('signal', False):
@@ -447,7 +438,7 @@ def create_stock_charts(result):
     return charts
 
 # ======================================================
-# 📊 PDF SUMMARY PAGE (With Tables)
+# 📊 PDF SUMMARY PAGE
 # ======================================================
 def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
     fig, ax = plt.subplots(figsize=(16, 12))
@@ -476,7 +467,7 @@ def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
     """
     
     full_text = f"""
-    📊 SPRZones - {date_str}
+    📊 SPRZones SCANNER REPORT - {date_str}
     ============================================================
     
     {cat1_text}
@@ -529,7 +520,7 @@ def main():
     if not cat1 and not cat2 and not cat3 and not vol_stocks:
         send_email_with_pdf(
             pdf_path=None,
-            subject=f"SPRZones Scan - EMA 200 ({date_str})",
+            subject=f"📊 SPRZones Scan - {date_str}",
             body_text=f"No significant signals found.\nScanned {len(STOCKS)} stocks.",
             html_table="<p>No significant signals found today.</p>"
         )
@@ -537,15 +528,13 @@ def main():
         return
     
     stocks_to_show = list({r['ticker']: r for r in (cat1 + cat2 + cat3 + vol_stocks)}.values())
-    pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
+    pdf_path = f"SPRZones_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
     
     with PdfPages(pdf_path) as pdf:
-        # Summary page
         summary_fig = create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str)
         pdf.savefig(summary_fig)
         plt.close(summary_fig)
         
-        # Charts for each stock
         for idx, stock in enumerate(stocks_to_show):
             print(f"  Generating charts for {stock['ticker']} ({idx+1}/{len(stocks_to_show)})...")
             try:
@@ -601,8 +590,7 @@ def main():
     VOLUME SURGE: {len(vol_stocks)} stocks
     """
     
-    # ✅ UPDATED SUBJECT: SPRZones Scan - EMA 200 (current date)
-    subject = f"SPRZones Scan - EMA 200 ({date_str})"
+    subject = f"🚀 SPRZones Scan - Cat1:{len(cat1)} | Vol:{len(vol_stocks)} ({date_str})"
     send_email_with_pdf(pdf_path, subject, body_text, html_table)
 
 if __name__ == "__main__":
