@@ -3,6 +3,7 @@ import pandas as pd
 import mplfinance as mpf
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.table import Table
 import os
 import time
 from datetime import datetime
@@ -77,7 +78,7 @@ def get_fundamentals(ticker):
         return None
 
 # ======================================================
-# 📈 CUSTOM INDICATORS (RSI, MACD) - Option F
+# 📈 INDICATORS (RSI, MACD)
 # ======================================================
 def calculate_rsi(df, period=14):
     delta = df['Close'].diff()
@@ -95,7 +96,7 @@ def calculate_macd(df):
     return macd, signal
 
 # ======================================================
-# 📈 TECHNICAL ANALYSIS (EMA + PATTERN + RSI + MACD)
+# 📈 TECHNICAL ANALYSIS
 # ======================================================
 def flatten_multiindex(df):
     if df is None or df.empty:
@@ -136,30 +137,23 @@ def detect_patterns(df):
 
 def analyze_df(df):
     if df is None or df.empty or len(df) < 50:
-        return {
-            'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '',
-            'volume_surge': False, 'rsi_bullish': False, 'macd_bullish': False,
-            'rsi_value': 50, 'macd_value': 0, 'signal_value': 0
-        }
+        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '',
+                'volume_surge': False, 'rsi_bullish': False, 'macd_bullish': False}
     
     df = flatten_multiindex(df.copy())
-    
-    # 1. EMA 200
     df['EMA_200'] = custom_ema(df['Close'], 200)
     if df['EMA_200'].isna().all():
-        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '', 'volume_surge': False, 'rsi_bullish': False, 'macd_bullish': False}
+        return {'ema': False, 'pattern': False, 'signal': False, 'pattern_name': '',
+                'volume_surge': False, 'rsi_bullish': False, 'macd_bullish': False}
     
-    # 2. Crossover
     prev_c = df['Close'].iloc[-2]; curr_c = df['Close'].iloc[-1]
     prev_e = df['EMA_200'].iloc[-2]; curr_e = df['EMA_200'].iloc[-1]
     ema_cross = (prev_c < prev_e) and (curr_c > curr_e)
     
-    # 3. Pattern
     pattern_name = ""; pattern_detected = False
     if ema_cross:
         pattern_detected, pattern_name = detect_patterns(df)
     
-    # 4. Volume Surge
     volume_surge = False
     if ema_cross and 'Volume' in df.columns and len(df) >= 20:
         avg_vol = df['Volume'].rolling(20).mean().iloc[-1]
@@ -167,31 +161,20 @@ def analyze_df(df):
         if avg_vol > 0 and curr_vol > (avg_vol * 1.5):
             volume_surge = True
     
-    # 5. 🔥 RSI Calculation (Option F)
     rsi_bullish = False
-    rsi_value = 50
     if len(df) > 14:
         rsi = calculate_rsi(df, 14)
         if not rsi.isna().all():
             rsi_last = rsi.iloc[-1]
             rsi_prev = rsi.iloc[-2] if len(rsi) > 1 else rsi_last
-            rsi_value = rsi_last
-            # Bullish if RSI > 50 OR crossing above 50
             if rsi_last > 50 or (rsi_prev < 50 and rsi_last > 50):
                 rsi_bullish = True
     
-    # 6. 🔥 MACD Calculation (Option F)
     macd_bullish = False
-    macd_value = 0
-    signal_value = 0
     if len(df) > 26:
         macd, signal = calculate_macd(df)
         if not macd.isna().all() and not signal.isna().all():
-            macd_last = macd.iloc[-1]
-            signal_last = signal.iloc[-1]
-            macd_value = macd_last
-            signal_value = signal_last
-            if macd_last > signal_last:
+            if macd.iloc[-1] > signal.iloc[-1]:
                 macd_bullish = True
     
     return {
@@ -201,83 +184,58 @@ def analyze_df(df):
         'pattern_name': pattern_name,
         'volume_surge': volume_surge,
         'rsi_bullish': rsi_bullish,
-        'macd_bullish': macd_bullish,
-        'rsi_value': rsi_value,
-        'macd_value': macd_value,
-        'signal_value': signal_value
+        'macd_bullish': macd_bullish
     }
 
 # ======================================================
-# 🔍 SCAN SINGLE STOCK (With Sector - Option G)
+# 🔍 SCAN SINGLE STOCK
 # ======================================================
 def scan_stock(ticker):
     try:
         print(f"  Scanning {ticker}...", end="")
-        
-        # 15m Data
         df15 = yf.download(ticker, period='45d', interval='15m', progress=False, auto_adjust=True)
         if df15.empty or len(df15) < 100:
-            print(" ❌ Skip (no 15m data)")
+            print(" ❌ Skip")
             return None
         df15 = flatten_multiindex(df15)
-        
-        # Resample
         df30 = df15.resample('30min').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         df1h = df15.resample('1h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         df4h = df15.resample('4h').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
-        
-        # Daily
         dfd = yf.download(ticker, period='60d', interval='1d', progress=False, auto_adjust=True)
         if dfd.empty or len(dfd) < 50:
-            print(" ❌ Skip (no daily data)")
+            print(" ❌ Skip")
             return None
         dfd = flatten_multiindex(dfd)
-        
-        # Weekly & Monthly
         dfw = dfd.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         dfm = dfd.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         
-        # Analyze all 7 TFs
         r15 = analyze_df(df15); r30 = analyze_df(df30); r1h = analyze_df(df1h)
         r4h = analyze_df(df4h); rd = analyze_df(dfd); rw = analyze_df(dfw); rm = analyze_df(dfm)
-        
-        # Fundamentals
         funda = get_fundamentals(ticker)
         if funda is None:
-            print(" ❌ Skip (no funda)")
+            print(" ❌ Skip")
             return None
         
-        # Aggregated flags (Any timeframe)
         has_ema = r15['ema'] or r30['ema'] or r1h['ema'] or r4h['ema'] or rd['ema'] or rw['ema'] or rm['ema']
         has_pattern = r15['pattern'] or r30['pattern'] or r1h['pattern'] or r4h['pattern'] or rd['pattern'] or rw['pattern'] or rm['pattern']
         has_volume = r15['volume_surge'] or r30['volume_surge'] or r1h['volume_surge'] or r4h['volume_surge'] or rd['volume_surge'] or rw['volume_surge'] or rm['volume_surge']
-        
-        # 🔥 RSI & MACD (Aggregated)
         has_rsi = r15['rsi_bullish'] or r30['rsi_bullish'] or r1h['rsi_bullish'] or r4h['rsi_bullish'] or rd['rsi_bullish'] or rw['rsi_bullish'] or rm['rsi_bullish']
         has_macd = r15['macd_bullish'] or r30['macd_bullish'] or r1h['macd_bullish'] or r4h['macd_bullish'] or rd['macd_bullish'] or rw['macd_bullish'] or rm['macd_bullish']
-        
-        # 🔥 Option A: Confluence Score (EMA + Pattern + RSI + MACD + Volume)
-        confluence_score = sum([has_ema, has_pattern, has_rsi, has_macd, has_volume])
-        
+        confluence = sum([has_ema, has_pattern, has_rsi, has_macd, has_volume])
         funda_ok = funda['score'] >= 3
         
-        # Quadrants
         cat_pattern_funda = has_ema and has_pattern and funda_ok
         cat_pattern_nofunda = has_ema and has_pattern and not funda_ok
         cat_nopattern_funda = has_ema and not has_pattern and funda_ok
         cat_nopattern_nofunda = has_ema and not has_pattern and not funda_ok
         
-        # 🔥 Option G: Sector & Industry
         try:
-            ticker_obj = yf.Ticker(ticker)
-            info = ticker_obj.info
+            info = yf.Ticker(ticker).info
             sector = info.get('sector', 'N/A')
             industry = info.get('industry', 'N/A')
             name = info.get('longName', ticker)[:25]
         except:
-            sector = 'N/A'
-            industry = 'N/A'
-            name = ticker
+            sector = 'N/A'; industry = 'N/A'; name = ticker
         
         print(" ✅ Done")
         return {
@@ -288,9 +246,9 @@ def scan_stock(ticker):
             'funda': funda,
             'has_ema': has_ema, 'has_pattern': has_pattern,
             'has_volume_surge': has_volume,
-            'has_rsi_bullish': has_rsi,   # Option F
-            'has_macd_bullish': has_macd, # Option F
-            'confluence_score': confluence_score, # Option A
+            'has_rsi_bullish': has_rsi,
+            'has_macd_bullish': has_macd,
+            'confluence_score': confluence,
             'funda_ok': funda_ok,
             'cat_pattern_funda': cat_pattern_funda,
             'cat_pattern_nofunda': cat_pattern_nofunda,
@@ -305,15 +263,51 @@ def scan_stock(ticker):
         return None
 
 # ======================================================
-# 📧 EMAIL & PDF
+# 📧 EMAIL SENDER (HTML Table)
 # ======================================================
-def send_email_with_pdf(pdf_path, subject, body):
+def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
     if not all([EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT]):
         print("❌ Email config missing.")
         return False
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER; msg['To'] = EMAIL_RECIPIENT; msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'plain'))
+    msg = MIMEMultipart('alternative')
+    msg['From'] = EMAIL_SENDER
+    msg['To'] = EMAIL_RECIPIENT
+    msg['Subject'] = subject
+    
+    # Plain text
+    part_text = MIMEText(body_text, 'plain')
+    msg.attach(part_text)
+    
+    # HTML (with table)
+    html_body = f"""
+    <html>
+    <head><style>
+        body {{ font-family: Arial, sans-serif; }}
+        table {{ border-collapse: collapse; width: 100%; margin: 10px 0; }}
+        th {{ background-color: #1a237e; color: white; padding: 8px; text-align: left; border: 1px solid #ddd; }}
+        td {{ padding: 8px; border: 1px solid #ddd; }}
+        tr:nth-child(even) {{ background-color: #f2f2f2; }}
+        .strong-buy {{ background-color: #4CAF50; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
+        .tech-watch {{ background-color: #ff9800; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
+        .funda-watch {{ background-color: #2196F3; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
+        .avoid {{ background-color: #f44336; color: white; font-weight: bold; padding: 3px 8px; border-radius: 4px; }}
+        .header {{ background-color: #0d47a1; color: white; padding: 10px; text-align: center; }}
+        .sub-header {{ background-color: #e3f2fd; padding: 5px 10px; margin: 5px 0; }}
+    </style></head>
+    <body>
+        <div class="header">
+            <h2>📊 SPRZ SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}</h2>
+        </div>
+        {html_table}
+        <p style="color:#666; font-size:12px; margin-top:20px;">
+            📌 Full PDF report attached with 7 timeframe charts for each stock.
+        </p>
+    </body>
+    </html>
+    """
+    part_html = MIMEText(html_body, 'html')
+    msg.attach(part_html)
+    
     if pdf_path and os.path.exists(pdf_path):
         with open(pdf_path, 'rb') as f:
             part = MIMEBase('application', 'pdf')
@@ -321,6 +315,7 @@ def send_email_with_pdf(pdf_path, subject, body):
             encoders.encode_base64(part)
             part.add_header('Content-Disposition', f'attachment; filename={os.path.basename(pdf_path)}')
             msg.attach(part)
+    
     try:
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
@@ -333,11 +328,14 @@ def send_email_with_pdf(pdf_path, subject, body):
         print(f"❌ Email error: {e}")
         return False
 
+# ======================================================
+# 📊 CHART GENERATOR (Fixed Layout)
+# ======================================================
 def create_stock_charts(result):
     ticker = result['ticker']; name = result['name']; sector = result['sector']
     funda = result['funda']; rec = result['final_recommendation']
-    vol_surge = result['has_volume_surge']
-    confluence = result['confluence_score']
+    vol_surge = result['has_volume_surge']; confluence = result['confluence_score']
+    
     tf_list = [
         (result['df15'], result['r15'], '15 Min'),
         (result['df30'], result['r30'], '30 Min'),
@@ -354,6 +352,7 @@ def create_stock_charts(result):
             return None
         df = flatten_multiindex(df.tail(90).copy())
         df['EMA_200'] = custom_ema(df['Close'], 200)
+        
         mc = mpf.make_marketcolors(up='#00ff00', down='#ff0000', wick='inherit')
         s = mpf.make_mpf_style(marketcolors=mc, gridstyle=':', y_on_right=True)
         ap_ema = mpf.make_addplot(df['EMA_200'], color='orange', width=1.5)
@@ -364,21 +363,27 @@ def create_stock_charts(result):
         macd_tag = " 📈MACD" if cross_data.get('macd_bullish', False) else ""
         title = f"{ticker} - {name[:15]} ({tf_name}) | {rec}\nPattern: {pattern_name if pattern_name else 'None'}{vol_tag}{rsi_tag}{macd_tag}"
         
+        # 🔥 FIX: Bigger figure, more padding
         fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
-                             volume=False, figsize=(10, 5), returnfig=True,
-                             tight_layout=True, title=title)
+                             volume=False, figsize=(12, 6), returnfig=True,
+                             tight_layout=False,  # Disable tight_layout to control padding manually
+                             title=title)
+        
+        # 🔥 Add manual padding to prevent date/price cut-off
+        fig.subplots_adjust(left=0.08, right=0.92, top=0.88, bottom=0.12)
+        
         ax = axes[0]
         if pattern_name and cross_data.get('signal', False):
             last_x = len(df) - 1
             last_high = df['High'].iloc[-1]
             ax.annotate(f'🚀 {pattern_name}', xy=(last_x, last_high),
-                        xytext=(last_x - 15, last_high * 1.02),
+                        xytext=(last_x - 15, last_high * 1.03),
                         arrowprops=dict(arrowstyle='->', color='yellow', lw=1.5),
-                        color='yellow', fontsize=9, weight='bold',
+                        color='yellow', fontsize=10, weight='bold',
                         bbox=dict(boxstyle='round,pad=0.3', facecolor='black', alpha=0.7))
         if cross_data.get('signal', False):
             ax.axvline(x=len(df) - 1, color='cyan', linestyle='--', alpha=0.6, linewidth=2, label='Crossover')
-            ax.legend()
+            ax.legend(loc='upper left')
         return fig
 
     for df, r, tf_name in tf_list:
@@ -386,36 +391,110 @@ def create_stock_charts(result):
         if fig:
             charts.append(fig)
     
-    # 📋 Enhanced Info Text (Options A, F, G)
-    info_text = f"""
-    📊 {ticker} - {name}
-    🏢 Sector: {sector}
-    ========================================
-    🏷️ Recommendation: {rec}
-    📊 Confluence Score (Option A): {confluence}/5
-    ----------------------------------------
-    📈 Fundamentals Score: {funda['score']}/5
-    PE: {funda['pe']:.2f} | ROE: {funda['roe']*100:.2f}%
-    Debt/Equity: {funda['debt']:.2f} | Margin: {funda['margin']*100:.2f}%
-    Revenue Growth: {funda['growth']*100:.2f}%
-    ----------------------------------------
-    🔍 Technical Filters (Option F):
-    EMA Crossover: {'✅ YES' if result['has_ema'] else '❌ NO'}
-    Bullish Pattern: {'✅ YES' if result['has_pattern'] else '❌ NO'}
-    RSI Bullish (>50): {'✅ YES' if result['has_rsi_bullish'] else '❌ NO'}
-    MACD Bullish: {'✅ YES' if result['has_macd_bullish'] else '❌ NO'}
-    Volume Surge: {'✅ YES' if result['has_volume_surge'] else '❌ NO'}
-    ----------------------------------------
-    🔍 Signal Summary (7 Timeframes):
-    15m:   {'✅' if result['r15']['signal'] else '❌'} ({result['r15']['pattern_name'] or 'None'}) RSI:{'✅' if result['r15']['rsi_bullish'] else '❌'} MACD:{'✅' if result['r15']['macd_bullish'] else '❌'}
-    30m:   {'✅' if result['r30']['signal'] else '❌'} ({result['r30']['pattern_name'] or 'None'}) RSI:{'✅' if result['r30']['rsi_bullish'] else '❌'} MACD:{'✅' if result['r30']['macd_bullish'] else '❌'}
-    1H:    {'✅' if result['r1h']['signal'] else '❌'} ({result['r1h']['pattern_name'] or 'None'}) RSI:{'✅' if result['r1h']['rsi_bullish'] else '❌'} MACD:{'✅' if result['r1h']['macd_bullish'] else '❌'}
-    4H:    {'✅' if result['r4h']['signal'] else '❌'} ({result['r4h']['pattern_name'] or 'None'}) RSI:{'✅' if result['r4h']['rsi_bullish'] else '❌'} MACD:{'✅' if result['r4h']['macd_bullish'] else '❌'}
-    Daily: {'✅' if result['rd']['signal'] else '❌'} ({result['rd']['pattern_name'] or 'None'}) RSI:{'✅' if result['rd']['rsi_bullish'] else '❌'} MACD:{'✅' if result['rd']['macd_bullish'] else '❌'}
-    Weekly:{'✅' if result['rw']['signal'] else '❌'} ({result['rw']['pattern_name'] or 'None'}) RSI:{'✅' if result['rw']['rsi_bullish'] else '❌'} MACD:{'✅' if result['rw']['macd_bullish'] else '❌'}
-    Monthly:{'✅' if result['rm']['signal'] else '❌'} ({result['rm']['pattern_name'] or 'None'}) RSI:{'✅' if result['rm']['rsi_bullish'] else '❌'} MACD:{'✅' if result['rm']['macd_bullish'] else '❌'}
+    # ====================================================
+    # 🔥 PROFESSIONAL INFO TABLE (Instead of plain text)
+    # ====================================================
+    fig_table, ax_table = plt.subplots(figsize=(14, 10))
+    ax_table.axis('off')
+    
+    # Data for table
+    table_data = [
+        ['Parameter', 'Value'],
+        ['Ticker', ticker],
+        ['Name', name],
+        ['Sector', sector],
+        ['Recommendation', rec],
+        ['Confluence Score', f"{confluence}/5"],
+        ['Fundamentals Score', f"{funda['score']}/5"],
+        ['PE Ratio', f"{funda['pe']:.2f}"],
+        ['ROE', f"{funda['roe']*100:.2f}%"],
+        ['Debt/Equity', f"{funda['debt']:.2f}"],
+        ['Profit Margin', f"{funda['margin']*100:.2f}%"],
+        ['Revenue Growth', f"{funda['growth']*100:.2f}%"],
+        ['---- Technical Filters ----', ''],
+        ['EMA Crossover', '✅' if result['has_ema'] else '❌'],
+        ['Bullish Pattern', '✅' if result['has_pattern'] else '❌'],
+        ['RSI Bullish (>50)', '✅' if result['has_rsi_bullish'] else '❌'],
+        ['MACD Bullish', '✅' if result['has_macd_bullish'] else '❌'],
+        ['Volume Surge', '✅' if result['has_volume_surge'] else '❌'],
+        ['---- Timeframe Signals ----', ''],
+        ['15m', f"{'✅' if result['r15']['signal'] else '❌'} ({result['r15']['pattern_name'] or 'None'})"],
+        ['30m', f"{'✅' if result['r30']['signal'] else '❌'} ({result['r30']['pattern_name'] or 'None'})"],
+        ['1H', f"{'✅' if result['r1h']['signal'] else '❌'} ({result['r1h']['pattern_name'] or 'None'})"],
+        ['4H', f"{'✅' if result['r4h']['signal'] else '❌'} ({result['r4h']['pattern_name'] or 'None'})"],
+        ['Daily', f"{'✅' if result['rd']['signal'] else '❌'} ({result['rd']['pattern_name'] or 'None'})"],
+        ['Weekly', f"{'✅' if result['rw']['signal'] else '❌'} ({result['rw']['pattern_name'] or 'None'})"],
+        ['Monthly', f"{'✅' if result['rm']['signal'] else '❌'} ({result['rm']['pattern_name'] or 'None'})"],
+    ]
+    
+    # Create table
+    table = ax_table.table(cellText=table_data, loc='center', cellLoc='left', colWidths=[0.3, 0.6])
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 1.5)
+    
+    # Color coding
+    for i, row in enumerate(table_data):
+        if i == 0:
+            for j in range(2):
+                table[(i, j)].set_facecolor('#1a237e')
+                table[(i, j)].set_text_props(color='white', weight='bold')
+        elif row[0].startswith('----'):
+            for j in range(2):
+                table[(i, j)].set_facecolor('#e3f2fd')
+                table[(i, j)].set_text_props(color='#0d47a1', weight='bold')
+        elif '✅' in str(row[1]):
+            table[(i, 1)].set_facecolor('#c8e6c9')
+        elif '❌' in str(row[1]):
+            table[(i, 1)].set_facecolor('#ffcdd2')
+    
+    charts.append(fig_table)
+    return charts
+
+# ======================================================
+# 📊 PDF SUMMARY PAGE (With Tables)
+# ======================================================
+def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
+    fig, ax = plt.subplots(figsize=(16, 12))
+    ax.axis('off')
+    
+    # Build category tables as text
+    def build_cat_text(cat_list, title, emoji):
+        if not cat_list:
+            return f"{emoji} {title}: 0 stocks\n    (None)\n"
+        lines = [f"{emoji} {title}: {len(cat_list)} stocks"]
+        for s in cat_list:
+            score = s.get('confluence_score', 'N/A')
+            lines.append(f"    - {s['ticker']} ({s['name']}) [{s['sector']}] Score:{score}/5")
+        return "\n".join(lines) + "\n"
+    
+    cat1_text = build_cat_text(cat1, "STRONG BUY", "🔥")
+    cat2_text = build_cat_text(cat2, "TECH WATCH", "📈")
+    cat3_text = build_cat_text(cat3, "FUNDA WATCH", "💪")
+    vol_text = build_cat_text(vol_stocks, "VOLUME SURGE", "🔊")
+    
+    stats = f"""
+    📊 Total EMA Crossovers: {len([r for r in all_results if r['has_ema']])}
+    🕯️ Patterns Detected: {len([r for r in all_results if r['has_pattern']])}
+    📈 RSI Bullish: {len([r for r in all_results if r['has_rsi_bullish']])}
+    📈 MACD Bullish: {len([r for r in all_results if r['has_macd_bullish']])}
+    ⏱️ Timeframes: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly
     """
-    return charts + [info_text]
+    
+    full_text = f"""
+    📊 SPRZ SCANNER REPORT - {date_str}
+    ============================================================
+    
+    {cat1_text}
+    {cat2_text}
+    {cat3_text}
+    {vol_text}
+    ============================================================
+    {stats}
+    """
+    
+    ax.text(0.05, 0.95, full_text, fontsize=11, family='monospace', verticalalignment='top')
+    return fig
 
 # ======================================================
 # 🚀 MAIN FUNCTION
@@ -436,7 +515,6 @@ def main():
     
     print(f"\n✅ Scan complete! Total processed: {len(all_results)}")
     
-    # Filter
     cat1 = [r for r in all_results if r['cat_pattern_funda']]
     cat2 = [r for r in all_results if r['cat_pattern_nofunda']]
     cat3 = [r for r in all_results if r['cat_nopattern_funda']]
@@ -446,102 +524,92 @@ def main():
     print("\n" + "="*60)
     print("📊 QUADRANT ANALYSIS RESULTS")
     print("="*60)
-    print(f"🔥 CAT 1 (Pattern + Funda) STRONG BUY: {len(cat1)}")
-    print(f"📈 CAT 2 (Pattern + No Funda) TECH WATCH: {len(cat2)}")
-    print(f"💪 CAT 3 (No Pattern + Funda) FUNDA WATCH: {len(cat3)}")
-    print(f"⛔ CAT 4 (No Pattern + No Funda) AVOID: {len(cat4)}")
-    print(f"🔊 VOLUME SURGE (Pattern + Volume): {len(vol_stocks)}")
+    print(f"🔥 STRONG BUY: {len(cat1)}")
+    print(f"📈 TECH WATCH: {len(cat2)}")
+    print(f"💪 FUNDA WATCH: {len(cat3)}")
+    print(f"⛔ AVOID: {len(cat4)}")
+    print(f"🔊 VOLUME SURGE: {len(vol_stocks)}")
+    
+    date_str = datetime.now().strftime('%d-%b-%Y')
     
     if not cat1 and not cat2 and not cat3 and not vol_stocks:
         send_email_with_pdf(
             pdf_path=None,
-            subject=f"📊 SPRZ Scan - {datetime.now().strftime('%d-%b-%Y')}",
-            body=f"No significant signals found today.\nScanned {len(STOCKS)} stocks.\n\n" + \
-                 f"🔥 CAT 1: 0\n📈 CAT 2: 0\n💪 CAT 3: 0\n⛔ CAT 4: {len(cat4)}\n🔊 Volume: 0"
+            subject=f"📊 SPRZ Scan - {date_str}",
+            body_text=f"No significant signals found.\nScanned {len(STOCKS)} stocks.",
+            html_table="<p>No significant signals found today.</p>"
         )
-        print("No significant signals. Email sent without PDF.")
+        print("No signals. Email sent without PDF.")
         return
     
     stocks_to_show = list({r['ticker']: r for r in (cat1 + cat2 + cat3 + vol_stocks)}.values())
     pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
     
     with PdfPages(pdf_path) as pdf:
-        # 📋 Summary Page with Sector Grouping (Option G)
-        fig_summary, ax_summary = plt.subplots(figsize=(18, 14))
-        ax_summary.axis('off')
-        
-        sector_text = ""
-        if cat1:
-            sectors = {}
-            for s in cat1:
-                sec = s['sector']
-                sectors[sec] = sectors.get(sec, []) + [f"{s['ticker']} ({s['name']})"]
-            sector_text = "\n\n📊 Sector-wise STRONG BUY:\n" + "\n".join([f"   {sec}: {', '.join(lst)}" for sec, lst in sectors.items()])
-        
-        summary_text = f"""
-        📊 SPRZ SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}
-        ============================================================
-        🔥 CAT 1: Pattern + Funda (STRONG BUY) → {len(cat1)} stocks
-        {chr(10).join([f"     - {s['ticker']} ({s['name']}) [{s['sector']}] Score:{s['confluence_score']}/5" for s in cat1]) if cat1 else "     (None)"}
-        {sector_text}
-        
-        📈 CAT 2: Pattern + No Funda (TECH WATCH) → {len(cat2)} stocks
-        {chr(10).join([f"     - {s['ticker']} ({s['name']}) [{s['sector']}]" for s in cat2]) if cat2 else "     (None)"}
-        
-        💪 CAT 3: No Pattern + Funda (FUNDA WATCH) → {len(cat3)} stocks
-        {chr(10).join([f"     - {s['ticker']} ({s['name']}) [{s['sector']}]" for s in cat3]) if cat3 else "     (None)"}
-        
-        🔊 VOLUME SURGE (Pattern + Volume) → {len(vol_stocks)} stocks
-        {chr(10).join([f"     - {s['ticker']} ({s['name']}) [{s['sector']}]" for s in vol_stocks]) if vol_stocks else "     (None)"}
-        ============================================================
-        📈 Total EMA: {len([r for r in all_results if r['has_ema']])}
-        🕯️ Patterns: {len([r for r in all_results if r['has_pattern']])}
-        📊 RSI Bullish: {len([r for r in all_results if r['has_rsi_bullish']])}
-        📈 MACD Bullish: {len([r for r in all_results if r['has_macd_bullish']])}
-        ⏱️ Timeframes: 15m, 30m, 1H, 4H, Daily, Weekly, Monthly
-        """
-        ax_summary.text(0.05, 0.95, summary_text, fontsize=10, family='monospace', verticalalignment='top')
-        pdf.savefig(fig_summary)
-        plt.close(fig_summary)
+        # Summary page
+        summary_fig = create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str)
+        pdf.savefig(summary_fig)
+        plt.close(summary_fig)
         
         # Charts for each stock
         for idx, stock in enumerate(stocks_to_show):
             print(f"  Generating charts for {stock['ticker']} ({idx+1}/{len(stocks_to_show)})...")
             try:
                 chart_data = create_stock_charts(stock)
+                # First 7 are charts, 8th is info table
                 for i in range(7):
                     if i < len(chart_data) and chart_data[i]:
                         pdf.savefig(chart_data[i])
                         plt.close(chart_data[i])
-                fig_info, ax_info = plt.subplots(figsize=(12, 8))
-                ax_info.axis('off')
-                ax_info.text(0.05, 0.95, chart_data[7], fontsize=9, family='monospace', verticalalignment='top')
-                pdf.savefig(fig_info)
-                plt.close(fig_info)
+                if len(chart_data) > 7:
+                    pdf.savefig(chart_data[7])
+                    plt.close(chart_data[7])
             except Exception as chart_err:
-                print(f"    ⚠️ Warning: Chart failed for {stock['ticker']}: {chart_err}")
+                print(f"    ⚠️ Warning: {stock['ticker']}: {chart_err}")
                 continue
     
     print(f"✅ PDF generated: {pdf_path}")
     
-    # 📧 Email
-    subject = f"🚀 SPRZ Scan - Cat1:{len(cat1)} | Vol:{len(vol_stocks)} ({datetime.now().strftime('%d-%b-%Y')})"
-    body = f"""
-    Hi,
+    # ====================================================
+    # 📧 HTML TABLE FOR EMAIL
+    # ====================================================
+    html_table = f"""
+    <h3>🔥 STRONG BUY ({len(cat1)} stocks)</h3>
+    <table>
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td><td>{s['confluence_score']}/5</td></tr>" for s in cat1]) if cat1 else "<tr><td colspan='4' style='text-align:center;color:#999;'>None</td></tr>"}
+    </table>
     
-    ✅ Scan complete with 7 Timeframes + RSI/MACD + Confluence Score!
+    <h3>📈 TECH WATCH ({len(cat2)} stocks)</h3>
+    <table>
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td></tr>" for s in cat2]) if cat2 else "<tr><td colspan='3' style='text-align:center;color:#999;'>None</td></tr>"}
+    </table>
     
-    🔥 CAT 1 (Pattern + Funda) STRONG BUY: {len(cat1)} stocks
-    {chr(10).join([f"    - {s['ticker']} ({s['name']}) [{s['sector']}] Score:{s['confluence_score']}/5" for s in cat1]) if cat1 else "    (None)"}
+    <h3>💪 FUNDA WATCH ({len(cat3)} stocks)</h3>
+    <table>
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td></tr>" for s in cat3]) if cat3 else "<tr><td colspan='3' style='text-align:center;color:#999;'>None</td></tr>"}
+    </table>
     
-    📈 CAT 2 (Pattern + No Funda) TECH WATCH: {len(cat2)} stocks
-    📊 Full PDF report attached with confluence score and RSI/MACD details.
-    
-    Regards,
-    SPRZ Scanner Bot
+    <h3>🔊 VOLUME SURGE ({len(vol_stocks)} stocks)</h3>
+    <table>
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td></tr>" for s in vol_stocks]) if vol_stocks else "<tr><td colspan='3' style='text-align:center;color:#999;'>None</td></tr>"}
+    </table>
     """
     
-    send_email_with_pdf(pdf_path, subject, body)
+    body_text = f"""
+    Scan complete with 7 Timeframes!
+    
+    STRONG BUY: {len(cat1)} stocks
+    TECH WATCH: {len(cat2)} stocks
+    FUNDA WATCH: {len(cat3)} stocks
+    VOLUME SURGE: {len(vol_stocks)} stocks
+    """
+    
+    subject = f"🚀 SPRZ Scan - Cat1:{len(cat1)} | Vol:{len(vol_stocks)} ({date_str})"
+    send_email_with_pdf(pdf_path, subject, body_text, html_table)
 
 if __name__ == "__main__":
     main()
