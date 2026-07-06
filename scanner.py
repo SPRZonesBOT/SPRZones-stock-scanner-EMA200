@@ -296,7 +296,7 @@ def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
     </style></head>
     <body>
         <div class="header">
-            <h2>📊 SPRZones SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}</h2>
+            <h2>📊 SPRZones - {datetime.now().strftime('%d-%b-%Y')}</h2>
         </div>
         {html_table}
         <p style="color:#666; font-size:12px; margin-top:20px;">
@@ -363,13 +363,11 @@ def create_stock_charts(result):
         macd_tag = " 📈MACD" if cross_data.get('macd_bullish', False) else ""
         title = f"{ticker} - {name[:15]} ({tf_name}) | {rec}\nPattern: {pattern_name if pattern_name else 'None'}{vol_tag}{rsi_tag}{macd_tag}"
         
-        # 🔥 FIX: Bigger figure, more padding
         fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
                              volume=False, figsize=(12, 6), returnfig=True,
-                             tight_layout=False,  # Disable tight_layout to control padding manually
+                             tight_layout=False,
                              title=title)
         
-        # 🔥 Add manual padding to prevent date/price cut-off
         fig.subplots_adjust(left=0.08, right=0.92, top=0.88, bottom=0.12)
         
         ax = axes[0]
@@ -392,12 +390,11 @@ def create_stock_charts(result):
             charts.append(fig)
     
     # ====================================================
-    # 🔥 PROFESSIONAL INFO TABLE (Instead of plain text)
+    # 🔥 PROFESSIONAL INFO TABLE
     # ====================================================
     fig_table, ax_table = plt.subplots(figsize=(14, 10))
     ax_table.axis('off')
     
-    # Data for table
     table_data = [
         ['Parameter', 'Value'],
         ['Ticker', ticker],
@@ -427,13 +424,11 @@ def create_stock_charts(result):
         ['Monthly', f"{'✅' if result['rm']['signal'] else '❌'} ({result['rm']['pattern_name'] or 'None'})"],
     ]
     
-    # Create table
     table = ax_table.table(cellText=table_data, loc='center', cellLoc='left', colWidths=[0.3, 0.6])
     table.auto_set_font_size(False)
     table.set_fontsize(10)
     table.scale(1, 1.5)
     
-    # Color coding
     for i, row in enumerate(table_data):
         if i == 0:
             for j in range(2):
@@ -458,7 +453,6 @@ def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
     fig, ax = plt.subplots(figsize=(16, 12))
     ax.axis('off')
     
-    # Build category tables as text
     def build_cat_text(cat_list, title, emoji):
         if not cat_list:
             return f"{emoji} {title}: 0 stocks\n    (None)\n"
@@ -482,7 +476,7 @@ def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
     """
     
     full_text = f"""
-    📊 SPRZ SCANNER REPORT - {date_str}
+    📊 SPRZones - {date_str}
     ============================================================
     
     {cat1_text}
@@ -535,7 +529,7 @@ def main():
     if not cat1 and not cat2 and not cat3 and not vol_stocks:
         send_email_with_pdf(
             pdf_path=None,
-            subject=f"📊 SPRZ Scan - {date_str}",
+            subject=f"SPRZones Scan - EMA 200 ({date_str})",
             body_text=f"No significant signals found.\nScanned {len(STOCKS)} stocks.",
             html_table="<p>No significant signals found today.</p>"
         )
@@ -556,7 +550,6 @@ def main():
             print(f"  Generating charts for {stock['ticker']} ({idx+1}/{len(stocks_to_show)})...")
             try:
                 chart_data = create_stock_charts(stock)
-                # First 7 are charts, 8th is info table
                 for i in range(7):
                     if i < len(chart_data) and chart_data[i]:
                         pdf.savefig(chart_data[i])
@@ -608,7 +601,8 @@ def main():
     VOLUME SURGE: {len(vol_stocks)} stocks
     """
     
-    subject = f"🚀 SPRZ Scan - Cat1:{len(cat1)} | Vol:{len(vol_stocks)} ({date_str})"
+    # ✅ UPDATED SUBJECT: SPRZones Scan - EMA 200 (current date)
+    subject = f"SPRZones Scan - EMA 200 ({date_str})"
     send_email_with_pdf(pdf_path, subject, body_text, html_table)
 
 if __name__ == "__main__":
