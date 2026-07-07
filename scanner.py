@@ -235,6 +235,10 @@ def scan_stock(ticker):
         cat_nopattern_funda = has_ema and not has_pattern and funda_ok
         cat_nopattern_nofunda = has_ema and not has_pattern and not funda_ok
         
+        # 🔥 Current Price from daily close
+        current_price = dfd['Close'].iloc[-1] if not dfd.empty else 0
+        current_price = round(current_price, 2)
+        
         try:
             info = yf.Ticker(ticker).info
             sector = info.get('sector', 'N/A')
@@ -245,6 +249,7 @@ def scan_stock(ticker):
         print(" ✅ Done")
         return {
             'ticker': ticker, 'name': name, 'sector': sector,
+            'current_price': current_price,  # 🔥 New field
             'df4h': df4h, 'dfd': dfd, 'dfw': dfw, 'dfm': dfm,
             'r4h': r4h, 'rd': rd, 'rw': rw, 'rm': rm,
             'funda': funda,
@@ -332,6 +337,7 @@ def create_stock_charts(result):
     ticker = result['ticker']; name = result['name']; sector = result['sector']
     funda = result['funda']; rec = result['final_recommendation']
     confluence = result['confluence_score']
+    price = result['current_price']
     
     tf_list = [
         (result['df4h'], result['r4h'], '4 Hours'),
@@ -385,7 +391,7 @@ def create_stock_charts(result):
         if fig:
             charts.append(fig)
     
-    # Info Table
+    # Info Table (with current price added)
     fig_table, ax_table = plt.subplots(figsize=(14, 10))
     ax_table.axis('off')
     
@@ -394,6 +400,7 @@ def create_stock_charts(result):
         ['Ticker', ticker],
         ['Name', name],
         ['Sector', sector],
+        ['Current Price', f"₹{price}"],
         ['Recommendation', rec],
         ['Confluence Score', f"{confluence}/5"],
         ['Fundamentals Score', f"{funda['score']}/5"],
@@ -438,7 +445,7 @@ def create_stock_charts(result):
     return charts
 
 # ======================================================
-# 📊 PDF SUMMARY PAGE
+# 📊 PDF SUMMARY PAGE (WITH CURRENT PRICE)
 # ======================================================
 def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
     fig, ax = plt.subplots(figsize=(16, 12))
@@ -450,7 +457,8 @@ def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
         lines = [f"{emoji} {title}: {len(cat_list)} stocks"]
         for s in cat_list:
             score = s.get('confluence_score', 'N/A')
-            lines.append(f"    - {s['ticker']} ({s['name']}) [{s['sector']}] Score:{score}/5")
+            price = s.get('current_price', 0)
+            lines.append(f"    - {s['ticker']} ({s['name']}) [{s['sector']}] Price: ₹{price} | Score:{score}/5")
         return "\n".join(lines) + "\n"
     
     cat1_text = build_cat_text(cat1, "STRONG BUY", "🔥")
@@ -529,7 +537,6 @@ def main():
         return
     
     stocks_to_show = list({r['ticker']: r for r in (cat1 + cat2 + cat3 + vol_stocks)}.values())
-    # 🔥 PDF Filename as requested
     pdf_path = f"SPRZones_Scan_EMA200_{date_str_file}.pdf"
     
     with PdfPages(pdf_path) as pdf:
@@ -554,30 +561,30 @@ def main():
     
     print(f"✅ PDF generated: {pdf_path}")
     
-    # HTML Table for Email
+    # 🔥 HTML Table with Price column
     html_table = f"""
     <h3>🔥 STRONG BUY ({len(cat1)} stocks)</h3>
     <table>
-        <tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Score</th></tr>
-        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td><td>{s['confluence_score']}/5</td></tr>" for s in cat1]) if cat1 else "<tr><td colspan='4' style='text-align:center;color:#999;'>None</td></tr>"}
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Price</th><th>Score</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td><td>₹{s['current_price']}</td><td>{s['confluence_score']}/5</td></tr>" for s in cat1]) if cat1 else "<tr><td colspan='5' style='text-align:center;color:#999;'>None</td></tr>"}
     </table>
     
     <h3>📈 TECH WATCH ({len(cat2)} stocks)</h3>
     <table>
-        <tr><th>Ticker</th><th>Name</th><th>Sector</th></tr>
-        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td></tr>" for s in cat2]) if cat2 else "<tr><td colspan='3' style='text-align:center;color:#999;'>None</td></tr>"}
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Price</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td><td>₹{s['current_price']}</td></tr>" for s in cat2]) if cat2 else "<tr><td colspan='4' style='text-align:center;color:#999;'>None</td></tr>"}
     </table>
     
     <h3>💪 FUNDA WATCH ({len(cat3)} stocks)</h3>
     <table>
-        <tr><th>Ticker</th><th>Name</th><th>Sector</th></tr>
-        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td></tr>" for s in cat3]) if cat3 else "<tr><td colspan='3' style='text-align:center;color:#999;'>None</td></tr>"}
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Price</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td><td>₹{s['current_price']}</td></tr>" for s in cat3]) if cat3 else "<tr><td colspan='4' style='text-align:center;color:#999;'>None</td></tr>"}
     </table>
     
     <h3>🔊 VOLUME SURGE ({len(vol_stocks)} stocks)</h3>
     <table>
-        <tr><th>Ticker</th><th>Name</th><th>Sector</th></tr>
-        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td></tr>" for s in vol_stocks]) if vol_stocks else "<tr><td colspan='3' style='text-align:center;color:#999;'>None</td></tr>"}
+        <tr><th>Ticker</th><th>Name</th><th>Sector</th><th>Price</th></tr>
+        {"".join([f"<tr><td>{s['ticker']}</td><td>{s['name']}</td><td>{s['sector']}</td><td>₹{s['current_price']}</td></tr>" for s in vol_stocks]) if vol_stocks else "<tr><td colspan='4' style='text-align:center;color:#999;'>None</td></tr>"}
     </table>
     """
     
@@ -590,7 +597,6 @@ def main():
     VOLUME SURGE: {len(vol_stocks)} stocks
     """
     
-    # 🔥 Email Subject as requested
     subject = f"SPRZones Scan - EMA 200 ({date_str})"
     send_email_with_pdf(pdf_path, subject, body_text, html_table)
 
