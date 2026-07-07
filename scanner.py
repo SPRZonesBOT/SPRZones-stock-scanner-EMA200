@@ -193,8 +193,6 @@ def scan_stock(ticker):
     try:
         print(f"  Scanning {ticker}...", end="")
         
-        # 🔥 Only 4H, Daily, Weekly, Monthly
-        
         # 1. 4H Data (Resample from 1H)
         df1h = yf.download(ticker, period='60d', interval='1h', progress=False, auto_adjust=True)
         if df1h.empty or len(df1h) < 100:
@@ -210,11 +208,10 @@ def scan_stock(ticker):
             return None
         dfd = flatten_multiindex(dfd)
         
-        # 3. Weekly & Monthly (Resample)
+        # 3. Weekly & Monthly
         dfw = dfd.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         dfm = dfd.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last','Volume':'sum'}).dropna()
         
-        # Analyze all 4 timeframes
         r4h = analyze_df(df4h)
         rd = analyze_df(dfd)
         rw = analyze_df(dfw)
@@ -296,7 +293,7 @@ def send_email_with_pdf(pdf_path, subject, body_text, html_table=""):
     </style></head>
     <body>
         <div class="header">
-            <h2>📊 SPRZ SCANNER REPORT - {datetime.now().strftime('%d-%b-%Y')}</h2>
+            <h2>📊 SPRZones Scan - EMA 200 ({datetime.now().strftime('%d-%b-%Y')})</h2>
         </div>
         {html_table}
         <p style="color:#666; font-size:12px; margin-top:20px;">
@@ -336,7 +333,6 @@ def create_stock_charts(result):
     funda = result['funda']; rec = result['final_recommendation']
     confluence = result['confluence_score']
     
-    # 🔥 ONLY 4 TIMEFRAMES: 4H, Daily, Weekly, Monthly
     tf_list = [
         (result['df4h'], result['r4h'], '4 Hours'),
         (result['dfd'], result['rd'], 'Daily'),
@@ -360,19 +356,15 @@ def create_stock_charts(result):
         rsi_tag = " 🔥RSI" if cross_data.get('rsi_bullish', False) else ""
         macd_tag = " 📈MACD" if cross_data.get('macd_bullish', False) else ""
         
-        # 🔥 Short title to avoid cut-off
         short_name = name[:12] if len(name) > 12 else name
         title_text = f"{ticker} - {short_name} ({tf_name}) | {rec}\nPattern: {pattern_name if pattern_name else 'None'}{vol_tag}{rsi_tag}{macd_tag}"
         
-        # 🔥 FIX: Larger figure with proper padding
         fig, axes = mpf.plot(df, type='candle', style=s, addplot=ap_ema,
                              volume=False, figsize=(16, 8), returnfig=True,
                              tight_layout=False, title='')
         
         ax = axes[0]
         ax.set_title(title_text, fontsize=11, weight='bold', pad=25, loc='center')
-        
-        # 🔥 Maximum padding to prevent any cut-off
         fig.subplots_adjust(left=0.06, right=0.94, top=0.95, bottom=0.08)
         
         if pattern_name and cross_data.get('signal', False):
@@ -393,9 +385,7 @@ def create_stock_charts(result):
         if fig:
             charts.append(fig)
     
-    # ====================================================
-    # 🔥 INFO TABLE
-    # ====================================================
+    # Info Table
     fig_table, ax_table = plt.subplots(figsize=(14, 10))
     ax_table.axis('off')
     
@@ -477,7 +467,7 @@ def create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str):
     """
     
     full_text = f"""
-    📊 SPRZ SCANNER REPORT - {date_str}
+    📊 SPRZones Scan - EMA 200 ({date_str})
     ============================================================
     
     {cat1_text}
@@ -526,11 +516,12 @@ def main():
     print(f"🔊 VOLUME SURGE: {len(vol_stocks)}")
     
     date_str = datetime.now().strftime('%d-%b-%Y')
+    date_str_file = datetime.now().strftime('%Y%m%d')
     
     if not cat1 and not cat2 and not cat3 and not vol_stocks:
         send_email_with_pdf(
             pdf_path=None,
-            subject=f"📊 SPRZ Scan - {date_str}",
+            subject=f"SPRZones Scan - EMA 200 ({date_str})",
             body_text=f"No significant signals found.\nScanned {len(STOCKS)} stocks.",
             html_table="<p>No significant signals found today.</p>"
         )
@@ -538,7 +529,8 @@ def main():
         return
     
     stocks_to_show = list({r['ticker']: r for r in (cat1 + cat2 + cat3 + vol_stocks)}.values())
-    pdf_path = f"SPRZ_Signals_{datetime.now().strftime('%Y%m%d')}.pdf"
+    # 🔥 PDF Filename as requested
+    pdf_path = f"SPRZones_Scan_EMA200_{date_str_file}.pdf"
     
     with PdfPages(pdf_path) as pdf:
         summary_fig = create_summary_page(cat1, cat2, cat3, vol_stocks, all_results, date_str)
@@ -549,7 +541,6 @@ def main():
             print(f"  Generating charts for {stock['ticker']} ({idx+1}/{len(stocks_to_show)})...")
             try:
                 chart_data = create_stock_charts(stock)
-                # 4 charts + 1 info table
                 for i in range(4):
                     if i < len(chart_data) and chart_data[i]:
                         pdf.savefig(chart_data[i])
@@ -599,7 +590,8 @@ def main():
     VOLUME SURGE: {len(vol_stocks)} stocks
     """
     
-    subject = f"🚀 SPRZ Scan (4TFs) - Cat1:{len(cat1)} | Vol:{len(vol_stocks)} ({date_str})"
+    # 🔥 Email Subject as requested
+    subject = f"SPRZones Scan - EMA 200 ({date_str})"
     send_email_with_pdf(pdf_path, subject, body_text, html_table)
 
 if __name__ == "__main__":
